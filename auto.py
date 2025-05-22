@@ -94,28 +94,45 @@ class LogFileSelector(QDialog):
 
         # 增强正则表达式（兼容带路径的文件名）
         ls_pattern = re.compile(
-            r'^([-rwxdlsStT]{10,12})\s+\d+\s+\S+\s+\S+\s+(\d+)\s+'
-            r'(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}|'
-            r'\w{3}\s+\d{1,2}\s+\d{2}:\d{2}|'
-            r'\w{3}\s+\d{1,2}\s+\d{4})\s+(.+)$'
+            r'^([-rwxdlsStT]{10,12})\s+'  # 权限
+            r'\d+\s+'  # 硬链接数
+            r'\S+\s+'  # 所有者
+            r'\S+\s+'  # 组
+            r'(\d+)\s+'  # 文件大小（允许长数字）
+            r'('  # 日期部分
+            r'\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}|'  # 格式1: 2025-05-20 11:43
+            r'\w{3}\s+\d{1,2}\s+\d{2}:\d{2}|'  # 格式2: Apr 27 10:38
+            r'\w{3}\s+\d{1,2}\s+\d{4}'  # 格式3: Aug 15 2025
+            r')\s+'
+            r'(.+)$'  # 路径（贪婪匹配到行末）
         )
 
         for line in raw_output.split('\n'):
             line = line.strip()
-            if not line or line.startswith('total'):
+            if not line:
+                continue
+
+            # 过滤错误行（如 "Error: ..."）
+            if line.lower().startswith('error:'):
+                print(f"[WARNING] 忽略错误行: {line}")
+                continue
+
+            # 跳过 "total ..." 行
+            if line.startswith('total'):
                 continue
 
             match = ls_pattern.match(line)
             if not match:
+                print(f"[ERROR] 未匹配的行: {line}")  # 输出未匹配的完整行
                 continue
 
-            perm, size, date_str, full_path = match.groups()  # 获取完整路径
-            filename = os.path.basename(full_path)  # 提取纯文件名
+            # 提取字段
+            perm, size, date_str, full_path = match.groups()
+            filename = os.path.basename(full_path.strip())  # 确保路径无前后空格
 
-            # 仅过滤目录
-            if perm.startswith('d'):
-                continue
-
+            # 调试日志
+            print(f"[DEBUG] 匹配成功: {line}")
+            print(f"[DEBUG] 分组结果: perm={perm}, size={size}, date={date_str}, path={full_path}")
             # 添加行到表格（显示纯文件名）
             row = self.table.rowCount()
             self.table.insertRow(row)
@@ -334,9 +351,11 @@ class STBTool(QWidget):
         self.ip_input.setPlaceholderText("请输入机顶盒IP地址")
         self.connect_btn = QPushButton("连接", self)
         self.deploy_btn = QPushButton("部署", self)
-        self.other_ops_btn = QPushButton("其他操作", self)
+        self.other_ops_btn = QPushButton("日志操作", self)
         self.reboot_btn = QPushButton("重启机顶盒", self)
         self.monitor_btn = QPushButton("性能监测", self)
+        self.storage_btn = QPushButton("存储空间监测", self)
+
 
         # ADB 命令输入框
         self.adb_command_input = QLineEdit(self)
@@ -356,6 +375,7 @@ class STBTool(QWidget):
         top_layout.addWidget(self.other_ops_btn)
         top_layout.addWidget(self.reboot_btn)
         top_layout.addWidget(self.monitor_btn)
+        top_layout.addWidget(self.storage_btn)
 
         adb_layout = QHBoxLayout()
         adb_layout.addWidget(self.adb_command_input)
@@ -375,6 +395,7 @@ class STBTool(QWidget):
         self.reboot_btn.clicked.connect(self.reboot_stb)
         self.run_adb_btn.clicked.connect(self.run_adb_command)
         self.monitor_btn.clicked.connect(self.show_performance_monitor)
+        self.storage_btn.clicked.connect(self.show_storage_monitor)
 
     def log(self, message, command=False):
         """增强日志方法，实时刷新界面"""
@@ -447,8 +468,7 @@ class STBTool(QWidget):
             if full_output.strip():  # 关键修改：检查输出是否非空
                 self.log(f"完整输出:\n{full_output}")
 
-            return full_output if return_code == 0 else f"Error: {full_output}"
-
+            return full_output
         except Exception as e:
             self.log(f"执行异常: {str(e)}")
             return str(e)
@@ -519,7 +539,7 @@ class STBTool(QWidget):
         """其他操作功能主界面"""
         self.log("执行其他操作")
         dialog = QDialog(self)
-        dialog.setWindowTitle("其他操作")
+        dialog.setWindowTitle("日志操作")
         dialog.setFixedSize(300, 150)
 
         layout = QVBoxLayout()
@@ -551,24 +571,71 @@ class STBTool(QWidget):
         PerformanceMonitorDialog(self).exec()
 
     def get_top_headers(self):
-        """获取当前设备的top命令列信息（仅取前10行）"""
-        output = self.run_adb(f'-s {self.ip_input.text()} shell "top -b -n 1 | head -n 10"')  # 关键修改
-        if "Error" in output:
-            return None
+        """动态解析列头（修复 S 列识别问题）"""
+        # 执行命令获取输出
+        output = self.run_adb(
+            f'-s {self.ip_input.text()} shell "top -b -n 1 | grep -E \'PID|ARGS|COMMAND\' | grep -vE \'grep|sh -c\'"'
+        )
 
-        # 解析列头
-        headers_line = ""
-        for line in output.split('\n'):
-            if "PID" in line and "USER" in line:  # 匹配列头特征行
-                headers_line = line
+        # 处理编码问题
+        try:
+            cleaned_output = output.encode('latin-1').decode('utf-8', errors='ignore')
+        except:
+            cleaned_output = output
+
+        # 匹配列头行
+        header_line = None
+        for line in cleaned_output.split('\n'):
+            line = line.strip()
+            if re.search(r'\bPID\b.*\bARGS\b', line, re.IGNORECASE):
+                header_line = line
                 break
 
-        if not headers_line:
+        if not header_line:
+            self.log("列头匹配失败")
             return None
 
-        # 清理特殊字符并分割列
-        headers = headers_line.strip().replace("%", "").split()
-        return {header: idx for idx, header in enumerate(headers)}
+        # 关键修复：分离 S 和 %CPU
+        cleaned_header = re.sub(r'(\bS)\[%CPU\]', r'\1 %CPU', header_line)  # S[%CPU] -> S %CPU
+        cleaned_header = re.sub(r'\s{2,}', ' ', cleaned_header)
+
+        # 精准分割列名
+        columns = re.findall(r'\b\w+\+?\b|\%?\w+', cleaned_header)
+        columns = [col.upper().replace('%', '') for col in columns]
+
+        # 列名标准化映射
+        key_mappings = {
+            'PID': ['PID'],
+            'USER': ['USER', 'UID'],
+            'PR': ['PR', 'PRI'],
+            'NI': ['NI', 'NICE'],
+            'VIRT': ['VIRT', 'VSZ'],
+            'RES': ['RES', 'RSS'],
+            'SHR': ['SHR'],
+            'S': ['S', 'STAT'],  # 确保匹配 S 列
+            'CPU': ['CPU', '%CPU'],  # 映射清洗后的 CPU 列
+            'MEM': ['MEM', '%MEM'],
+            'TIME+': ['TIME+', 'TIME'],
+            'COMMAND': ['ARGS', 'COMMAND']
+        }
+
+        # 构建列映射
+        final_headers = {}
+        for std_name, variants in key_mappings.items():
+            for var in variants:
+                if var in columns:
+                    final_headers[std_name] = columns.index(var)
+                    break
+            else:
+                self.log(f"缺失关键列: {std_name}")
+                return None
+
+        self.log(f"列头解析结果: {final_headers}")
+        return final_headers
+
+    def show_storage_monitor(self):
+        """显示存储空间监测对话框"""
+        StorageMonitorDialog(self).exec()
 
 
 class LogSwitchDialog(QDialog):
@@ -715,7 +782,16 @@ class PerformanceMonitorDialog(QDialog):
         self.btn_extract.clicked.connect(self.extract_logs)
 
     def start_monitoring(self):
-        """启动性能监测"""
+        """启动监控（增加版本校验）"""
+        # 检查设备是否支持新脚本
+        android_version = self.parent.run_adb(
+            f'-s {self.parent.ip_input.text()} shell "getprop ro.build.version.release"'
+        )
+        if float(android_version) < 8.0:
+            QMessageBox.warning(
+                self, "兼容性警告",
+                "Android 8.0以下设备可能不支持新版监控脚本"
+            )
         # 生成动态脚本
         headers = self.parent.get_top_headers()
         if not headers:
@@ -790,51 +866,61 @@ class PerformanceMonitorDialog(QDialog):
             QMessageBox.warning(self, "错误", "终止进程失败")
 
     def extract_logs(self):
-        """提取日志文件"""
+        """提取监测文件（兼容新旧版本日志格式）"""
         dest_dir = QFileDialog.getExistingDirectory(self, "选择保存目录")
-        if dest_dir:
-            self.parent.run_adb(f'-s {self.parent.ip_input.text()} pull /sdcard/logfile.csv "{dest_dir}"')
-            self.parent.log(f"监测日志已保存至: {dest_dir}")
-            QMessageBox.information(self, "完成", "日志提取完成")
+        if not dest_dir:
+            return
+
+        # 提取日志文件
+        self.parent.run_adb(
+            f'-s {self.parent.ip_input.text()} pull /sdcard/logfile.csv "{dest_dir}"'
+        )
+
+        # 校验文件完整性
+        log_path = os.path.join(dest_dir, "logfile.csv")
+        if os.path.exists(log_path):
+            with open(log_path, 'r') as f:
+                header = f.readline().strip()
+                if "total_cpu" in header:
+                    self.parent.log("成功提取新版监测日志")
+                else:
+                    self.parent.log("警告：日志格式可能不兼容")
+
+            QMessageBox.information(self, "完成", "日志提取成功")
+        else:
+            QMessageBox.warning(self, "错误", "未找到日志文件")
 
     def generate_script(self, headers):
-        """生成动态脚本"""
-        column_mapping = {
-            'PID': '$1',
-            'USER': '$2',
-            'PR': '$3',
-            'NI': '$4',
-            'VIRT': '$5',
-            'RES': '$6',
-            'SHR': '$7',
-            'S': '$8',
-            '%CPU': '$9',
-            '%MEM': '$10',
-            'TIME+': '$11',
-            'COMMAND': '$12'
-        }
+        """生成动态脚本（确保系统指标解析正确）"""
+        # 读取模板文件（注意编码处理）
+        try:
+            with open('top_Performance.sh', 'r', encoding='utf-8') as f:
+                script = f.read()
+        except UnicodeDecodeError:
+            with open('top_Performance.sh', 'r', encoding='gbk') as f:
+                script = f.read()
 
-        # 构建awk打印语句
-        awk_print = []
-        for header in ['timestamp', 'PID', 'USER', 'PR', 'NI', 'VIRT', 'RES', 'SHR', 'S', '%CPU', '%MEM', 'TIME+',
-                       'COMMAND']:
-            if header == 'timestamp':
-                awk_print.append('ts')
-            else:
-                awk_print.append(column_mapping.get(header, '""'))
+        # 替换系统指标解析逻辑
+        cpu_parser = '''
+        # 解析 CPU 使用率
+        cpu_line=$(echo "$top_output" | grep -m 1 "%Cpu(s)")
+        user_cpu=$(echo "$cpu_line" | awk '{print $2}' | tr -d '%%us,')
+        sys_cpu=$(echo "$cpu_line" | awk '{print $4}' | tr -d '%%sy,')
+        idle_cpu=$(echo "$cpu_line" | awk '{print $8}' | tr -d '%%id,')
+        total_cpu=$(echo "scale=1; $user_cpu + $sys_cpu" | bc)
+        '''
 
-        # 从top_Performance.sh读取模板并替换（使用UTF-8编码）
-        with open('top_Performance.sh', 'r', encoding='utf-8') as f:  # 关键修改点
-            script = f.read()
+        mem_parser = '''
+        # 解析内存信息
+        mem_line=$(echo "$top_output" | grep -m 1 "^Mem")
+        total_mem=$(echo "$mem_line" | awk '{print $4}' | tr -d 'k')
+        used_mem=$(echo "$mem_line" | awk '{print $8}' | tr -d 'k')
+        free_mem=$(echo "$mem_line" | awk '{print $10}' | tr -d 'k')
+        buffers=$(echo "$mem_line" | awk '{print $12}' | tr -d 'k')
+        '''
 
-        script = script.replace(
-            'echo "timestamp,pid,user,pr,ni,virt,res,shr,s,%cpu,%mem,time+,args" > "$LOGFILE"',
-            f'echo "timestamp,{",".join(column_mapping.keys())}" > "$LOGFILE"'
-        )
-        script = script.replace(
-            'print ts, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12',
-            f'print {", ".join(awk_print)}'
-        )
+        script = script.replace('# ========== 解析系统级指标 ==========', cpu_parser + mem_parser)
+
         return script
 
     def get_remote_md5(self):
@@ -842,6 +928,181 @@ class PerformanceMonitorDialog(QDialog):
         output = self.parent.run_adb(
             f'-s {self.parent.ip_input.text()} shell "md5sum /system/bin/top_Performance.sh 2>/dev/null"')
         return output.split()[0] if output else ""
+
+
+# 新增存储监测对话框类
+class StorageMonitorDialog(QDialog):
+    """存储空间监测对话框"""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.parent = parent
+        self.setWindowTitle("存储空间监测")
+        self.setFixedSize(400, 300)
+        self.script_name = "cleanup.sh"
+        self.pid_file = "/sdcard/cleanup.pid"
+        # 初始化时直接读取PID文件
+        self.current_pid = self._read_pid_from_device()
+        self.is_running = self._check_pid_active()
+
+        layout = QVBoxLayout()
+
+        # 路径输入
+        self.path_input = QLineEdit("/data")
+        path_layout = QHBoxLayout()
+        path_layout.addWidget(QLabel("监控路径:"))
+        path_layout.addWidget(self.path_input)
+
+        # 阈值输入
+        self.threshold_input = QLineEdit("80")
+        threshold_layout = QHBoxLayout()
+        threshold_layout.addWidget(QLabel("存储阈值(%):"))
+        threshold_layout.addWidget(self.threshold_input)
+
+        # 删除数量
+        self.delete_input = QLineEdit("5")
+        delete_layout = QHBoxLayout()
+        delete_layout.addWidget(QLabel("最大删除数:"))
+        delete_layout.addWidget(self.delete_input)
+
+        # 按钮组
+        btn_layout = QHBoxLayout()
+        self.btn_start = QPushButton("启动监测")
+        self.btn_stop = QPushButton("停止监测")
+        btn_layout.addWidget(self.btn_start)
+        btn_layout.addWidget(self.btn_stop)
+
+        # 添加组件
+        layout.addLayout(path_layout)
+        layout.addLayout(threshold_layout)
+        layout.addLayout(delete_layout)
+        layout.addLayout(btn_layout)
+        self.setLayout(layout)
+
+        # 绑定事件
+        self.btn_start.clicked.connect(self.start_monitoring)
+        self.btn_stop.clicked.connect(self.stop_monitoring)
+
+    def validate_inputs(self):
+        """验证输入参数"""
+        try:
+            path = self.path_input.text().strip()
+            threshold = int(self.threshold_input.text())
+            max_delete = int(self.delete_input.text())
+
+            if not path.startswith("/"):
+                raise ValueError("路径必须以/开头")
+            if not 1 <= threshold <= 99:
+                raise ValueError("阈值需在1-99之间")
+            if max_delete < 1:
+                raise ValueError("删除数量至少为1")
+            return True
+        except ValueError as e:
+            QMessageBox.warning(self, "输入错误", str(e))
+            return False
+
+    def start_monitoring(self):
+        """启动存储监测"""
+        if not self.validate_inputs():
+            return
+
+        # 检查本地脚本
+        local_script = os.path.join(os.path.dirname(__file__), self.script_name)
+        if not os.path.exists(local_script):
+            QMessageBox.critical(self, "错误", f"未找到本地脚本: {self.script_name}")
+            return
+
+        # 上传并更新脚本
+        remote_path = f"/system/bin/{self.script_name}"
+        current_md5 = self.get_remote_md5(remote_path)
+        new_md5 = self.calculate_md5(local_script)
+
+        if current_md5 != new_md5:
+            self.parent.log("更新监测脚本...")
+            output = self.parent.run_adb(
+                f'-s {self.parent.ip_input.text()} push "{local_script}" {remote_path}')
+            self.parent.run_adb(
+                f'-s {self.parent.ip_input.text()} shell chmod 755 {remote_path}')
+
+        # 构建命令参数
+        params = (
+            f'"{self.path_input.text().strip()}" '  # 路径加引号防止空格问题
+            f'{self.threshold_input.text().strip()} '
+            f'{self.delete_input.text().strip()}'
+        )
+
+        # 启动脚本前删除旧的PID文件
+        self.parent.run_adb(f'-s {self.parent.ip_input.text()} shell "rm {self.pid_file} 2>/dev/null"')
+
+        # 启动脚本并获取PID
+        cmd = f'shell "sh -c \'nohup {remote_path} {params} >/dev/null 2>&1 & echo $! > {self.pid_file}\'"'
+        output = self.parent.run_adb(f'-s {self.parent.ip_input.text()} {cmd}')
+
+        # 直接读取设备PID文件
+        self.current_pid = self._read_pid_from_device()
+        if self.current_pid:
+            QMessageBox.information(self, "成功", f"监测已启动（PID: {self.current_pid}）")
+        else:
+            QMessageBox.warning(self, "错误", "启动监测失败")
+
+    def stop_monitoring(self):
+        """直接从设备读取PID并终止进程"""
+        # 实时读取PID文件
+        current_pid = self._read_pid_from_device()
+        if not current_pid:
+            QMessageBox.warning(self, "警告", "未找到运行中的监测进程")
+            return
+
+        try:
+            # 终止进程树
+            cmd = (
+                f'shell "'
+                f'for pid in $(ps -o pid --ppid {current_pid} 2>/dev/null | tail -n +2); do '
+                f'  kill -9 $pid 2>/dev/null; '
+                f'done; '
+                f'kill -9 {current_pid} 2>/dev/null; '
+                f'rm {self.pid_file} 2>/dev/null"'
+            )
+            output = self.parent.run_adb(f'-s {self.parent.ip_input.text()} {cmd}')
+
+            # 验证终止结果
+            check_cmd = f'shell "ps | grep -w {current_pid} | grep -v grep"'
+            if not self.parent.run_adb(check_cmd):
+                QMessageBox.information(self, "成功", "进程已终止")
+            else:
+                raise RuntimeError("进程残留")
+        except Exception as e:
+            QMessageBox.critical(self, "错误", f"终止失败: {str(e)}")
+
+    def get_remote_md5(self, remote_path):
+        """获取设备端文件的MD5"""
+        output = self.parent.run_adb(
+            f'-s {self.parent.ip_input.text()} shell "md5sum {remote_path} 2>/dev/null"')
+        return output.split()[0] if output else ""
+
+    def calculate_md5(self, file_path):
+        """计算本地文件MD5"""
+        hash_md5 = hashlib.md5()
+        with open(file_path, "rb") as f:
+            for chunk in iter(lambda: f.read(4096), b""):
+                hash_md5.update(chunk)
+        return hash_md5.hexdigest()
+
+    def _read_pid_from_device(self):
+        """从设备读取PID文件内容"""
+        output = self.parent.run_adb(
+            f'-s {self.parent.ip_input.text()} shell "cat {self.pid_file} 2>/dev/null"'
+        ).strip()
+        return output if output.isdigit() else None
+
+    def _check_pid_active(self):
+        """检查PID是否有效"""
+        if not self.current_pid:
+            return False
+        output = self.parent.run_adb(
+            f'-s {self.parent.ip_input.text()} shell "ps | grep -w {self.current_pid} | grep -v grep"'
+        )
+        return bool(output.strip())
 
 
 if __name__ == "__main__":
