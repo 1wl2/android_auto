@@ -5,12 +5,760 @@ import time
 import tempfile
 import hashlib
 import subprocess
+import json
+import base64
+import datetime
+import requests
+from email.utils import parsedate_to_datetime
+from cryptography.hazmat.primitives.asymmetric import rsa, padding
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.exceptions import InvalidSignature
 from PyQt6.QtCore import Qt, QDateTime
 from PyQt6.QtWidgets import (QVBoxLayout, QFileDialog, QLabel, QDialog, QMessageBox, QTableWidget, QTableWidgetItem,
-                             QHeaderView, QCheckBox,
-                             QAbstractItemView, QDialogButtonBox, QProgressDialog, QApplication, QPushButton,QWidget, QHBoxLayout,QLineEdit, QTextEdit, )
+                             QHeaderView, QCheckBox, QAbstractItemView, QDialogButtonBox, QProgressDialog, QApplication,
+                             QPushButton, QWidget, QHBoxLayout, QLineEdit, QTextEdit, )
 
 
+# ====================== 新增授权管理器类 ======================
+class LicenseManager:
+    def __init__(self, parent):
+        self.parent = parent
+        """
+        home_dir = os.path.expanduser("~"
+        if not os.access(home_dir, os.W_OK):
+            self.parent.log(f"[ERROR] 无写入权限: {home_dir}")
+        else:
+            self.parent.log(f"[DEBUG] 有写入权限: {home_dir}")
+        """
+        # 本地授权文件路径（隐藏目录）
+        self.local_license_path = os.path.join(os.path.expanduser("~"), ".stb_tool_license")
+        # --self.parent.log(f"[DEBUG] 本地授权文件路径: {os.path.abspath(self.local_license_path)}")
+        # 设备授权文件路径
+        self.device_license_path = "/sdcard/.android_tool_license"
+        # 程序发布日期（硬编码防止时间篡改）
+        self.release_date = datetime.datetime(2025, 5, 23)
+        # 最大使用次数
+        self.max_uses = 5
+        # 最多授权设备数
+        self.max_devices = 3
+
+    def generate_key_pair(self):
+        private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        private_pem = private_key.private_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PrivateFormat.PKCS8,
+            encryption_algorithm=serialization.NoEncryption()
+        )
+
+        public_pem = private_key.public_key().public_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo
+        )
+        return private_pem, public_pem
+
+    def encrypt_data(self, data, public_key_pem):
+        public_key = serialization.load_pem_public_key(public_key_pem)
+        encrypted = public_key.encrypt(
+            data.encode(),
+            padding.OAEP(
+                mgf=padding.MGF1(algorithm=hashes.SHA256()),
+                algorithm=hashes.SHA256(),
+                label=None
+            )
+        )
+        return base64.b64encode(encrypted).decode()
+
+    def generate_device_fingerprint(self, device_ip):
+        """获取设备硬件指纹（序列号 + MAC）"""
+        try:
+            serial = self.get_device_serial(device_ip)
+            mac = self.parent.run_adb(f'-s {device_ip} shell cat /sys/class/net/wlan0/address').strip()
+            if not mac or "No such file" in mac or "Permission denied" in mac:
+                # 尝试 eth0 替代
+                mac = self.parent.run_adb(f'-s {device_ip} shell cat /sys/class/net/eth0/address').strip()
+
+            if not serial or not mac:
+                self.parent.log(f"[ERROR] 获取设备指纹失败 (serial: {serial}, mac: {mac})")
+                return None
+
+            raw_fp = f"{serial}_{mac}"
+            return hashlib.sha256(raw_fp.encode()).hexdigest()
+        except Exception as e:
+            self.parent.log(f"[ERROR] 指纹生成异常: {str(e)}")
+            return None
+
+    def read_fingerprint_records(self):
+        path = os.path.expanduser("~/.stb_fingerprint_records.json")
+        if not os.path.exists(path):
+            return []
+        try:
+            with open(path, "r") as f:
+                return json.load(f).get("fingerprints", [])
+        except Exception as e:
+            self.parent.log(f"[ERROR] 读取指纹记录失败: {str(e)}")
+            return []
+
+    def append_fingerprint_record(self, record):
+        path = os.path.expanduser("~/.stb_fingerprint_records.json")
+        try:
+            data = {"fingerprints": []}
+            if record not in data["fingerprints"]:
+                data["fingerprints"].append(record)
+
+            if os.path.exists(path):
+                with open(path, "r") as f:
+                    data = json.load(f)
+
+            with open(path, "w") as f:
+                json.dump(data, f, indent=2)
+        except Exception as e:
+            self.parent.log(f"[ERROR] 写入指纹记录失败: {str(e)}")
+
+    def get_device_serial(self, device_ip):
+        """获取设备序列号（替代IP作为设备ID）"""
+        output = self.parent.run_adb(f'-s {device_ip} shell getprop ro.serialno')
+        return output.strip()
+
+    def decrypt_data(self, encrypted_data, private_key_pem):
+        """使用私钥解密数据"""
+        private_key_pem_bytes = private_key_pem.encode()  # 转换私钥为字节字符串
+        private_key = serialization.load_pem_private_key(private_key_pem_bytes, password=None)
+        decrypted = private_key.decrypt(
+            base64.b64decode(encrypted_data),
+            padding.OAEP(
+                mgf=padding.MGF1(algorithm=hashes.SHA256()),
+                algorithm=hashes.SHA256(),
+                label=None
+            )
+        )
+        return decrypted.decode()
+
+    def sign_data(self, data, private_key_pem):
+        """使用私钥签名数据"""
+        try:
+            # 确保传入的是字节或字符串
+            if isinstance(private_key_pem, str):
+                private_key_pem = private_key_pem.encode()
+
+            private_key = serialization.load_pem_private_key(private_key_pem, password=None)
+            signature = private_key.sign(
+                data.encode(),
+                padding.PSS(
+                    mgf=padding.MGF1(hashes.SHA256()),
+                    salt_length=padding.PSS.MAX_LENGTH
+                ),
+                hashes.SHA256()
+            )
+            return base64.b64encode(signature).decode()
+        except Exception as e:
+            self.parent.log(f"[ERROR] 签名失败: {str(e)}")
+            return ""
+
+    def verify_signature(self, data, signature, public_key_pem):
+        """使用公钥验证签名"""
+        try:
+            # --self.parent.log(f"[DEBUG] 验证签名数据: {data}")
+            # --self.parent.log(f"[DEBUG] 公钥内容: {public_key_pem[:100]}...")
+            public_key_pem_bytes = public_key_pem.encode()
+            public_key = serialization.load_pem_public_key(public_key_pem_bytes)
+
+            public_key.verify(
+                base64.b64decode(signature),
+                data.encode(),
+                padding.PSS(
+                    mgf=padding.MGF1(algorithm=hashes.SHA256()),
+                    salt_length=padding.PSS.MAX_LENGTH
+                ),
+                hashes.SHA256()
+            )
+            return True
+        except InvalidSignature:
+            self.parent.log("[ERROR] 签名验证失败: 无效签名")
+            return False
+        except Exception as e:
+            self.parent.log(f"[ERROR] 签名验证异常: {str(e)}")
+            return False
+
+    def get_network_time(self):
+        """从可靠网站响应头的 Date 字段获取网络时间"""
+        time_servers = [
+            'https://www.baidu.com',
+            'https://www.google.com',
+            'http://time.aliyun.com'
+        ]
+
+        for url in time_servers:
+            try:
+                response = requests.get(url, timeout=2, headers={'User-Agent': 'Mozilla/5.0'})
+                date_str = response.headers.get('Date')
+                if date_str:
+                    aware_time = parsedate_to_datetime(date_str)
+                    # 转换为本地时间并去除 tzinfo
+                    local_time = aware_time.astimezone().replace(tzinfo=None)
+                    self.parent.log(f"[INFO] 成功从 {url} 获取时间: {local_time}")
+                    return local_time
+            except Exception as e:
+                self.parent.log(f"[WARN] 尝试从 {url} 获取时间失败: {str(e)}")
+
+        self.parent.log("[WARN] 所有时间服务器不可用，使用本地时间")
+        return datetime.datetime.now()
+
+    def create_device_fingerprint(self, device_id):
+        """生成设备指纹"""
+        # 获取设备序列号作为唯一标识
+        serial = self.parent.run_adb(f'-s {device_id} shell getprop ro.serialno').strip()
+        return hashlib.sha256(serial.encode()).hexdigest() if serial else ""
+
+    def save_local_license(self, device_id, uses_count, expiry_date, device_public_key,
+                           all_devices, device_private_key=None, device_fingerprint=None):
+        """保存本地授权文件（增强版本）"""
+        try:
+            # ---- 处理密钥 ----
+            def ensure_str(val):
+                if val is None:
+                    return None
+                if isinstance(val, bytes):
+                    try:
+                        return val.decode('utf-8')
+                    except Exception:
+                        # 如果 decode 失败，使用 base64 编码处理
+                        return base64.b64encode(val).decode('utf-8')
+                return str(val)
+
+            device_public_str = ensure_str(device_public_key)
+            device_private_str = ensure_str(device_private_key)
+            device_ip = self.parent.ip_input.text().strip()
+            device_fingerprint = self.generate_device_fingerprint(device_ip)
+            # ---- 构造授权数据 ----
+            license_data = {
+                "device_id": device_id,
+                "uses": uses_count,
+                "expiry": expiry_date.isoformat(),
+                "device_public_key": device_public_str,
+                "device_private_key": device_private_str,
+                "last_update": datetime.datetime.now().isoformat(),
+                "all_devices": list(set(all_devices)) if all_devices else [device_id],
+                "fingerprint": device_fingerprint
+            }
+
+            # 测试能否被序列化（可删除此段，但更安全）
+            json.dumps(license_data)
+
+            # ---- 写入文件 ----
+            license_dir = os.path.dirname(self.local_license_path)
+            if not os.path.exists(license_dir):
+                os.makedirs(license_dir, exist_ok=True)
+
+            # --self.parent.log(f"[DEBUG] 正在写入授权文件: {self.local_license_path}")
+
+            with open(self.local_license_path, "w", encoding="utf-8") as f:
+                json.dump(license_data, f, indent=2, ensure_ascii=False)
+
+            return True
+
+        except Exception as e:
+            import traceback
+            self.parent.log(f"[ERROR] 保存本地授权文件失败: {str(e)}")
+            self.parent.log(traceback.format_exc())
+            return False
+
+    def read_local_license(self):
+        """读取本地授权文件"""
+        try:
+            with open(self.local_license_path, "r") as f:
+                data = json.load(f)
+                # 添加调试日志
+                if "device_public_key" in data:
+                    self.parent.log(f"[DEBUG] 读取本地公钥: {data['device_public_key'][:100]}...")
+                return data
+        except Exception as e:
+            self.parent.log(f"[ERROR] 读取本地授权文件失败: {str(e)}")
+            return None
+
+    def read_device_license(self, device_ip):
+        """从设备读取授权文件（增强错误处理）"""
+        try:
+            # 创建临时文件接收内容
+            with tempfile.NamedTemporaryFile(mode="w+", delete=False, suffix=".json") as tmp:
+                tmp_path = tmp.name
+
+            # 使用ADB拉取文件到临时位置 - 使用IP地址作为设备标识
+            pull_cmd = f'-s {device_ip} pull "{self.device_license_path}" "{tmp_path}"'
+            output = self.parent.run_adb(pull_cmd)
+
+            # 检查是否拉取成功
+            if not os.path.exists(tmp_path) or os.path.getsize(tmp_path) == 0:
+                self.parent.log(f"[ERROR] 设备授权文件拉取失败: {output}")
+                return None
+
+            # 读取并解析JSON
+            with open(tmp_path, "r") as f:
+                license_data = json.load(f)
+
+            return license_data
+        except Exception as e:
+            self.parent.log(f"[ERROR] 读取设备授权文件异常: {str(e)}")
+            return None
+        finally:
+            # 清理临时文件
+            if tmp_path and os.path.exists(tmp_path):
+                os.remove(tmp_path)
+
+    def save_device_license(self, device_identifier, device_id, uses_count, expiry_date, local_public_key, signature):
+        """保存设备端授权文件（增强版本）"""
+        try:
+            license_data = {
+                "device_id": device_id,  # 关键修复：使用设备序列号
+                "uses": uses_count,
+                "expiry": expiry_date.isoformat(),
+                "local_public_key": local_public_key.decode() if isinstance(local_public_key,
+                                                                            bytes) else local_public_key,
+                "signature": signature
+            }
+
+            # 创建临时文件
+            with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".json") as tmp:
+                json.dump(license_data, tmp, indent=2)
+                tmp_path = tmp.name
+
+            # 使用ADB推送文件到设备（使用设备标识符IP）
+            push_cmd = f'-s {device_identifier} push "{tmp_path}" "{self.device_license_path}"'
+            output = self.parent.run_adb(push_cmd)
+            # --self.parent.log(f"[DEBUG] 推送命令输出: {output}")
+
+            # 验证是否推送成功
+            check_cmd = f'-s {device_identifier} shell "ls -l {self.device_license_path}"'
+            check_output = self.parent.run_adb(check_cmd)
+
+            if "No such file" in check_output:
+                # 尝试创建父目录
+                dir_path = os.path.dirname(self.device_license_path)
+                mkdir_cmd = f'-s {device_identifier} shell "mkdir -p {dir_path}"'
+                self.parent.run_adb(mkdir_cmd)
+
+                # 再次尝试推送
+                output = self.parent.run_adb(push_cmd)
+                check_output = self.parent.run_adb(check_cmd)
+
+                if "No such file" in check_output:
+                    self.parent.log(f"[ERROR] 设备授权文件创建失败: {check_output}")
+                    return False
+
+            # --self.parent.log(f"[DEBUG] 成功创建设备授权文件: {self.device_license_path}")
+            # --self.parent.log(f"[DEBUG] 文件详情: {check_output}")
+            return True
+
+        except Exception as e:
+            self.parent.log(f"[ERROR] 保存设备授权文件失败: {str(e)}")
+            return False
+        finally:
+            # 清理临时文件
+            if 'tmp_path' in locals() and os.path.exists(tmp_path):
+                os.remove(tmp_path)
+
+    def initialize_license(self):
+        """初始化授权（增强版本，解决文件未生成问题）"""
+        try:
+            device_ip = self.parent.ip_input.text().strip()
+            if not device_ip:
+                self.parent.log("[ERROR] 未输入设备IP")
+                return False
+
+            # --self.parent.log(f"[DEBUG] 开始初始化授权 for {device_ip}")
+            # 0. 获取指纹并检查是否已授权
+            device_fingerprint = self.generate_device_fingerprint(device_ip)
+            if not device_fingerprint:
+                self.parent.log("授权失败：无法生成指纹")
+                return False
+
+            # 检查指纹是否已授权过（防止绕过）
+            existing_fps = self.read_fingerprint_records()
+            if device_fingerprint in [r["fingerprint"] for r in existing_fps]:
+                self.parent.log("授权失败：该设备已注册过授权，禁止重复授权")
+                return False
+
+            # 1. 检查设备连接状态 - 修复匹配逻辑
+            devices_output = self.parent.run_adb('devices')
+            connected = False
+            for line in devices_output.splitlines():
+                if device_ip in line and "device" in line:
+                    connected = True
+                    break
+
+            if not connected:
+                # 尝试通过序列号匹配
+                serial = self.get_device_serial(device_ip)
+                if serial:
+                    for line in devices_output.splitlines():
+                        if serial in line and "device" in line:
+                            connected = True
+                            break
+
+            if not connected:
+                self.parent.log(f"[ERROR] 设备未连接: {device_ip}")
+                # --self.parent.log(f"[DEBUG] ADB设备列表:\n{devices_output}")
+                return False
+
+            # 2. 检查/sdcard写入权限（使用IP地址作为设备标识）
+            # --self.parent.log("[DEBUG] 检查/sdcard写入权限...")
+            test_file = "/sdcard/.license_test_file"
+            test_cmd = f'-s {device_ip} shell "touch {test_file} && rm {test_file}"'
+            perm_output = self.parent.run_adb(test_cmd)
+
+            if "Permission denied" in perm_output:
+                # 尝试请求存储权限
+                # --self.parent.log("[DEBUG] 尝试请求存储权限...")
+                perm_grant_cmd = (
+                    f'-s {device_ip} shell appops set --uid com.vixtel.stb.agent '
+                    f'MANAGE_EXTERNAL_STORAGE allow'
+                )
+                grant_output = self.parent.run_adb(perm_grant_cmd)
+
+                # 再次检查权限
+                perm_output = self.parent.run_adb(test_cmd)
+                if "Permission denied" in perm_output:
+                    self.parent.log(f"[ERROR] 无法获取/sdcard写入权限: {perm_output}")
+                    return False
+                else:
+                    self.parent.log("[DEBUG] 存储权限已授予")
+
+            # 3. 获取设备序列号作为唯一标识
+            serial_cmd = f'-s {device_ip} shell getprop ro.serialno'
+            device_serial = self.parent.run_adb(serial_cmd).strip()
+            if not device_serial:
+                self.parent.log("[ERROR] 无法获取设备序列号")
+                return False
+            # --self.parent.log(f"[DEBUG] 设备序列号: {device_serial}")
+
+            # 4. 获取当前授权设备列表
+            local_license = self.read_local_license()
+            all_devices = local_license.get("all_devices", []) if local_license else []
+            # -- self.parent.log(f"[DEBUG] 当前已授权设备列表: {all_devices}")
+
+            # 5. 检查设备是否已授权
+            if device_serial in all_devices:
+                self.parent.log("设备已授权，无需重复授权")
+                return True
+
+            # 6. 检查设备数量限制
+            if len(all_devices) >= self.max_devices:
+                self.parent.log(f"授权失败：已授权设备数已达上限（{self.max_devices}）")
+                return False
+
+            # 7. 添加新设备到授权列表
+            all_devices.append(device_serial)
+            # --self.parent.log(f"[DEBUG] 更新后授权设备列表: {all_devices}")
+
+            # 8. 生成本地密钥对
+            # --self.parent.log("[DEBUG] 生成本地密钥对...")
+            local_private, local_public = self.generate_key_pair()
+
+            # 9. 生成设备密钥对（使用序列号作为种子）
+            # --self.parent.log("[DEBUG] 生成设备密钥对...")
+            device_private, device_public = self.generate_key_pair()
+
+            # 10. 计算有效期（使用网络时间或本地时间）
+            current_time = self.get_network_time() or datetime.datetime.now()
+            expiry_date = current_time + datetime.timedelta(days=1)
+            # --self.parent.log(f"[DEBUG] 授权有效期至: {expiry_date}")
+
+            # 11. 保存本地授权文件
+            # --self.parent.log("[DEBUG] 保存本地授权文件...")
+            if not self.save_local_license(
+                    device_serial,
+                    0,
+                    expiry_date,
+                    device_public,
+                    all_devices,
+                    device_private,  # 保存设备私钥用于后续签名
+                    device_fingerprint
+            ):
+                self.parent.log("保存本地授权文件失败")
+                return False
+
+            # 12. 准备设备授权数据
+            device_data = {
+                "device_id": device_serial,
+                "uses": 0,
+                "expiry": expiry_date.isoformat(),
+                "local_public_key": local_public.decode() if isinstance(local_public, bytes) else local_public
+            }
+            device_data_str = json.dumps(device_data, separators=(',', ':'))  # 紧凑格式确保一致性
+            # --self.parent.log(f"[DEBUG] 设备授权数据: {device_data_str}")
+
+            # 13. 使用设备私钥签名
+            signature = self.sign_data(device_data_str, device_private)
+            # --self.parent.log(f"[DEBUG] 使用设备私钥生成的签名: {signature[:20]}...")
+
+            # 添加调试信息
+            # --self.parent.log(f"[DEBUG] 设备公钥内容: {device_public[:100]}...")
+
+            # 14. 保存设备授权文件（确保目录存在）
+            # --self.parent.log("[DEBUG] 创建设备授权目录...")
+            license_dir = os.path.dirname(self.device_license_path)
+            self.parent.run_adb(f'-s {device_ip} shell "mkdir -p {license_dir}"')
+
+            # 15. 保存设备授权文件
+            # --self.parent.log("[DEBUG] 保存设备授权文件...")
+            if not self.save_device_license(
+                    device_ip,  # 用于ADB命令的设备标识符(IP)
+                    device_serial,  # 真正的设备ID(序列号)
+                    0,
+                    expiry_date,
+                    local_public,
+                    signature
+            ):
+                self.parent.log("保存设备授权文件失败")
+                return False
+
+            # 16. 验证文件是否创建成功
+            check_cmd = f'-s {device_ip} shell "ls -l {self.device_license_path}"'
+            check_output = self.parent.run_adb(check_cmd)
+            if "No such file" in check_output:
+                self.parent.log(f"[ERROR] 设备授权文件未创建: {check_output}")
+                return False
+
+            # --self.parent.log(f"[DEBUG] 设备授权文件已创建: {check_output}")
+            # --self.parent.log("[DEBUG] 授权初始化成功")
+
+            # 记录指纹
+            self.append_fingerprint_record({
+                "fingerprint": device_fingerprint,
+                "device_id": device_serial,
+                "first_auth_time": datetime.datetime.now().isoformat(),
+                "auth_count": 1
+            })
+
+            return True
+
+        except Exception as e:
+            self.parent.log(f"[ERROR] 初始化授权异常: {str(e)}")
+            import traceback
+            self.parent.log(traceback.format_exc())
+            return False
+
+    def verify_licenses(self, device_ip, device_id):
+        """双向验证本地和设备授权文件"""
+        # 读取本地授权
+        local_license = self.read_local_license()
+        if not local_license:
+            self.parent.log("授权失败：本地授权文件不存在")
+            return False
+
+        # 检查设备是否被授权
+        if device_id not in local_license.get("all_devices", []):
+            self.parent.log(f"授权失败：该设备未在授权设备列表中")
+            return False
+
+        # 读取设备授权
+        device_license = self.read_device_license(device_ip)  # 传入device_ip
+        if not device_license:
+            self.parent.log("授权失败：设备授权文件不存在")
+            return False
+
+        # 1. 验证设备ID是否匹配
+        if local_license["device_id"] != device_id or device_license["device_id"] != device_id:
+            self.parent.log(f"授权失败：设备ID不匹配 (本地:{local_license['device_id']}, 设备:{device_license['device_id']})")
+            return False
+
+        # 2. 验证时间有效性
+        current_time = self.get_network_time() or datetime.datetime.now()
+        expiry_date = datetime.datetime.fromisoformat(local_license["expiry"])
+
+        # 检查是否过期
+        if current_time > expiry_date:
+            self.parent.log(f"授权失败：授权已过期 (有效期至:{expiry_date})")
+            return False
+
+        # 3. 双向密钥验证
+        # 验证设备签名（使用设备公钥验证设备授权文件）
+        # 使用紧凑JSON格式确保一致性
+        device_data = json.dumps({
+            "device_id": device_license["device_id"],
+            "uses": device_license["uses"],
+            "expiry": device_license["expiry"],
+            "local_public_key": device_license["local_public_key"]
+        }, separators=(',', ':'))  # 关键修复
+
+        # --self.parent.log(f"[DEBUG] 验证数据: {device_data}")
+        # --self.parent.log(f"[DEBUG] 设备签名: {device_license['signature'][:100]}...")
+        # --self.parent.log(f"[DEBUG] 本地公钥: {local_license['device_public_key'][:100]}...")
+
+        if not self.verify_signature(
+                device_data,
+                device_license["signature"],
+                local_license["device_public_key"]
+        ):
+            self.parent.log("授权失败：设备签名验证失败")
+            return False
+
+        # 验证本地授权数据（使用本地私钥"解密"验证）
+        # 这里我们验证关键数据一致性
+        if (local_license["uses"] != device_license["uses"] or
+                local_license["expiry"] != device_license["expiry"]):
+            self.parent.log(f"授权失败：数据不一致 (本地使用次数:{local_license['uses']}, 设备使用次数:{device_license['uses']})")
+            return False
+
+        # 4. 检查使用次数
+        if int(local_license["uses"]) >= self.max_uses:
+            self.parent.log(f"授权失败：使用次数已达上限 ({local_license['uses']}/{self.max_uses})")
+            return False
+
+        # 5.设备指纹校验
+        fp = self.generate_device_fingerprint(device_ip)
+        if not fp:
+            self.parent.log("授权失败：无法生成设备指纹")
+            return False  # 必须强制中断
+
+        expected_fp = local_license.get("fingerprint")
+        if expected_fp and fp and expected_fp != fp:
+            self.parent.log("授权失败：设备指纹不匹配，可能是伪造授权文件")
+            return False
+
+        # 所有验证通过
+        self.parent.log("授权验证成功")
+        return True
+
+    def update_usage(self, device_ip, device_id):
+        """更新使用次数"""
+        local_license = self.read_local_license()
+        device_license = self.read_device_license(device_ip)
+
+        if not local_license or not device_license:
+            return False
+
+        # 增加使用计数
+        new_count = int(local_license["uses"]) + 1
+        expiry_date = datetime.datetime.fromisoformat(local_license["expiry"])
+
+        # 获取当前的授权设备列表
+        all_devices = local_license.get("all_devices", [])
+
+        # 关键修复：添加 all_devices 参数
+        # 更新本地授权
+        if not self.save_local_license(
+                device_id,
+                new_count,
+                expiry_date,
+                local_license["device_public_key"],
+                all_devices,  # 添加这个参数
+                device_private_key=local_license.get("device_private_key")
+        ):
+            self.parent.log("更新本地授权文件失败")
+            return False
+
+        # 更新设备授权
+        device_data = json.dumps({
+            "device_id": device_id,
+            "uses": new_count,
+            "expiry": expiry_date.isoformat(),
+            "local_public_key": device_license["local_public_key"]
+        }, separators=(',', ':'))  # 紧凑格式确保一致性
+
+        # 重新签名（使用设备私钥）
+        device_private_key = local_license.get("device_private_key")
+        if not device_private_key:
+            self.parent.log("更新失败：未找到设备私钥")
+            return False
+
+        signature = self.sign_data(device_data, device_private_key)
+
+        # 保存设备授权文件（确保传递正确的参数）
+        if not self.save_device_license(
+                device_ip,  # ADB标识符
+                device_id,  # 设备序列号
+                new_count,
+                expiry_date,
+                device_license["local_public_key"],
+                signature
+        ):
+            self.parent.log("更新设备授权文件失败")
+            return False
+
+        self.parent.log(f"使用次数更新: {new_count}/{self.max_uses}")
+        return True
+
+    def is_fingerprint_blocked(self, fingerprint):
+        """检查是否存在指纹记录或被拉黑"""
+        fp_records = self.read_fingerprint_records()
+        for record in fp_records:
+            if record["fingerprint"] == fingerprint:
+                return record.get("blocked", False)
+        return False
+
+    def check_license(self):
+        """执行完整的授权检查流程"""
+        device_ip = self.parent.ip_input.text().strip()
+        if not device_ip:
+            self.parent.log("[ERROR] 未输入设备IP")
+            return False
+
+        # 获取当前设备指纹
+        device_fingerprint = self.generate_device_fingerprint(device_ip)
+        if not device_fingerprint:
+            self.parent.log("授权失败：无法生成设备指纹")
+            return False
+
+        # 若已有授权记录或被拉黑，则拒绝初始化
+        if self.is_fingerprint_blocked(device_fingerprint):
+            self.parent.log("授权失败：该设备指纹已存在或被禁止初始化")
+            return False
+
+        # 获取设备序列号
+        device_id = self.get_device_serial(device_ip)
+        if not device_id:
+            self.parent.log("[ERROR] 无法获取设备序列号")
+            return False
+
+        # 检查当前时间有效性（防止时间回绕）
+        current_time = self.get_network_time() or datetime.datetime.now()
+        if current_time < self.release_date:
+            self.parent.log("错误：系统时间早于程序发布日期")
+            return False
+
+        # 读取本地授权文件
+        local_license = self.read_local_license()
+
+        if not local_license:
+            self.parent.log("[DEBUG] 首次运行，初始化授权")
+            if not self.initialize_license():
+                self.parent.log("授权初始化失败")
+                return False
+            local_license = self.read_local_license()
+            if not local_license:
+                self.parent.log("初始化后仍无法读取授权文件")
+                return False
+        else:
+            self.parent.log("[DEBUG] 找到现有授权文件")
+
+        # ✅ 判断当前设备是否已授权，否则尝试新增授权
+        all_devices = local_license.get("all_devices", [])
+        if device_id not in all_devices:
+            self.parent.log(f"[DEBUG] 当前设备（{device_id}）未授权，尝试添加授权...")
+            if not self.initialize_license():
+                self.parent.log("授权失败：无法为新设备初始化授权")
+                return False
+            local_license = self.read_local_license()
+            if not local_license or device_id not in local_license.get("all_devices", []):
+                self.parent.log("授权失败：新设备仍未记录在授权文件中")
+                return False
+
+        # 执行双向验证
+        if not self.verify_licenses(device_ip, device_id):
+            self.parent.log("授权验证失败")
+            return False
+
+        # 更新使用次数
+        if not self.update_usage(device_ip, device_id):
+            self.parent.log("使用计数更新失败")
+            return False
+
+        return True
+
+
+# ====================== 授权管理器类结束 ======================
+
+# ====================== 日志文件选择对话框类开始 ======================
 class LogFileSelector(QDialog):
     """日志文件选择对话框"""
 
@@ -356,7 +1104,6 @@ class STBTool(QWidget):
         self.monitor_btn = QPushButton("性能监测", self)
         self.storage_btn = QPushButton("存储空间监测", self)
 
-
         # ADB 命令输入框
         self.adb_command_input = QLineEdit(self)
         self.adb_command_input.setPlaceholderText("输入ADB命令")
@@ -389,6 +1136,7 @@ class STBTool(QWidget):
         self.setLayout(main_layout)
 
         # 绑定事件
+        self.license_manager = LicenseManager(self)
         self.connect_btn.clicked.connect(self.connect_stb)
         self.deploy_btn.clicked.connect(self.deploy_files)
         self.other_ops_btn.clicked.connect(self.other_operations)
@@ -407,6 +1155,11 @@ class STBTool(QWidget):
         """执行自定义 ADB 命令"""
         command = self.adb_command_input.text().strip()
         if command:
+            # 检查授权 - 修改这里
+            if not self.license_manager.check_license():
+                QMessageBox.warning(self, "授权失败", "工具未授权或授权已过期")
+                return
+
             output = self.run_adb(command)
             self.log(f"> {command}\n{output}")
 
@@ -491,6 +1244,12 @@ class STBTool(QWidget):
 
     def deploy_files(self):
         """增强部署日志"""
+        # 检查授权
+        if not self.license_manager.check_license():
+            QMessageBox.warning(self, "授权失败", "工具未授权或授权已过期")
+            return
+
+        """增强部署日志"""
         self.log("开始部署流程")
         folder = QFileDialog.getExistingDirectory(self, "选择部署文件夹")
         if not folder:
@@ -532,11 +1291,21 @@ class STBTool(QWidget):
 
     def reboot_stb(self):
         """重启机顶盒"""
+        # 检查授权
+        if not self.license_manager.check_license():
+            QMessageBox.warning(self, "授权失败", "工具未授权或授权已过期")
+            return
+
         self.run_adb("reboot")
         self.log("机顶盒已重启")
 
     def other_operations(self):
         """其他操作功能主界面"""
+        # 检查授权
+        if not self.license_manager.check_license():
+            QMessageBox.warning(self, "授权失败", "工具未授权或授权已过期")
+            return
+
         self.log("执行其他操作")
         dialog = QDialog(self)
         dialog.setWindowTitle("日志操作")
@@ -568,6 +1337,11 @@ class STBTool(QWidget):
 
     def show_performance_monitor(self):
         """显示性能监测对话框"""
+        # 检查授权
+        if not self.license_manager.check_license():
+            QMessageBox.warning(self, "授权失败", "工具未授权或授权已过期")
+            return
+
         PerformanceMonitorDialog(self).exec()
 
     def get_top_headers(self):
@@ -635,6 +1409,10 @@ class STBTool(QWidget):
 
     def show_storage_monitor(self):
         """显示存储空间监测对话框"""
+        # 检查授权
+        if not self.license_manager.check_license():
+            QMessageBox.warning(self, "授权失败", "工具未授权或授权已过期")
+            return
         StorageMonitorDialog(self).exec()
 
 
@@ -930,7 +1708,6 @@ class PerformanceMonitorDialog(QDialog):
         return output.split()[0] if output else ""
 
 
-# 新增存储监测对话框类
 class StorageMonitorDialog(QDialog):
     """存储空间监测对话框"""
 
