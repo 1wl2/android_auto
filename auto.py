@@ -16,7 +16,7 @@ from cryptography.exceptions import InvalidSignature
 from PyQt6.QtCore import Qt, QDateTime
 from PyQt6.QtWidgets import (QVBoxLayout, QFileDialog, QLabel, QDialog, QMessageBox, QTableWidget, QTableWidgetItem,
                              QHeaderView, QCheckBox, QAbstractItemView, QDialogButtonBox, QProgressDialog, QApplication,
-                             QPushButton, QWidget, QHBoxLayout, QLineEdit, QTextEdit, )
+                             QPushButton, QWidget, QHBoxLayout, QLineEdit, QTextEdit)
 
 
 # ====================== 新增授权管理器类 ======================
