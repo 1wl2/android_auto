@@ -3,3 +3,4 @@ dist-1.0.1
 dist
 venv
 auto-cf
+.gitignore
