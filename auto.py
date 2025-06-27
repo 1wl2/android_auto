@@ -5,10 +5,26 @@ import time
 import tempfile
 import hashlib
 import subprocess
+from functools import wraps
 from PyQt6.QtCore import Qt, QDateTime
+from license_utils import (
+    load_license, consume_license, prompt_license_in_window, handle_license_failure,LicenseError
+)
 from PyQt6.QtWidgets import (QVBoxLayout, QFileDialog, QLabel, QDialog, QMessageBox, QTableWidget, QTableWidgetItem,
                              QHeaderView, QCheckBox,
-                             QAbstractItemView, QDialogButtonBox, QProgressDialog, QApplication, QPushButton,QWidget, QHBoxLayout,QLineEdit, QTextEdit, )
+                             QAbstractItemView, QDialogButtonBox, QProgressDialog, QApplication, QPushButton,QWidget, QHBoxLayout,QLineEdit, QTextEdit )
+
+
+def require_license(func):
+    @wraps(func)
+    def wrapper(self, *args, **kwargs):
+        try:
+            consume_license()
+        except LicenseError as e:
+            retry = handle_license_failure(self, str(e))
+            return  # 无论 retry 是否成功，都阻止功能继续执行
+        return func(self, *args, **kwargs)
+    return wrapper
 
 
 class LogFileSelector(QDialog):
@@ -388,6 +404,19 @@ class STBTool(QWidget):
 
         self.setLayout(main_layout)
 
+        self.show()
+
+        if not load_license():
+            prompt_license_in_window(self)
+
+        while True:
+            try:
+                break
+            except Exception as e:
+                retry = handle_license_failure(self, str(e))
+                if not retry:
+                    sys.exit(1)
+
         # 绑定事件
         self.connect_btn.clicked.connect(self.connect_stb)
         self.deploy_btn.clicked.connect(self.deploy_files)
@@ -489,7 +518,8 @@ class STBTool(QWidget):
         else:
             self.log(f"连接失败：{output}")
 
-    def deploy_files(self):
+    @require_license
+    def deploy_files(self, *args, **kwargs):
         """增强部署日志"""
         self.log("开始部署流程")
         folder = QFileDialog.getExistingDirectory(self, "选择部署文件夹")
@@ -530,12 +560,14 @@ class STBTool(QWidget):
 
             self.log("部署完成")
 
-    def reboot_stb(self):
+    @require_license
+    def reboot_stb(self, *args, **kwargs):
         """重启机顶盒"""
         self.run_adb("reboot")
         self.log("机顶盒已重启")
 
-    def other_operations(self):
+    @require_license
+    def other_operations(self, *args, **kwargs):
         """其他操作功能主界面"""
         self.log("执行其他操作")
         dialog = QDialog(self)
@@ -566,7 +598,8 @@ class STBTool(QWidget):
         output = self.run_adb(f'-s {self.ip_input.text()} shell ls /data/data/com.vixtel.stb.agent/files')
         return "Permission denied" in output
 
-    def show_performance_monitor(self):
+    @require_license
+    def show_performance_monitor(self, *args, **kwargs):
         """显示性能监测对话框"""
         PerformanceMonitorDialog(self).exec()
 
@@ -633,7 +666,8 @@ class STBTool(QWidget):
         self.log(f"列头解析结果: {final_headers}")
         return final_headers
 
-    def show_storage_monitor(self):
+    @require_license
+    def show_storage_monitor(self, *args, **kwargs):
         """显示存储空间监测对话框"""
         StorageMonitorDialog(self).exec()
 

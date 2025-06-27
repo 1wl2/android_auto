@@ -1,38 +1,49 @@
-# -*- mode: python ; coding: utf-8 -*-
+# auto.spec
 
+block_cipher = None
 
 a = Analysis(
-    ['auto1.py'],
+    ['auto.py'],
     pathex=[],
     binaries=[],
-    datas=[('top_Performance.sh', '.'), ('platform-tools\\adb.exe', 'platform-tools'), ('platform-tools\\AdbWinApi.dll', 'platform-tools'), ('platform-tools\\AdbWinUsbApi.dll', 'platform-tools')],
-    hiddenimports=['PyQt6', 'PyQt6.QtWidgets', 'PyQt6.QtCore', 'PyQt6.QtGui', 'PyQt6.QtNetwork'],
+    datas=[
+        ('platform-tools/*', 'platform-tools')  # 把整个平台工具打包进去
+    ],
+    hiddenimports=[
+        'PyQt6.QtWidgets',
+        'PyQt6.QtGui',
+        'PyQt6.QtCore'
+    ],
     hookspath=[],
-    hooksconfig={},
     runtime_hooks=[],
     excludes=[],
-    noarchive=False,
-    optimize=0,
+    win_no_prefer_redirects=False,
+    win_private_assemblies=False,
+    cipher=block_cipher,
 )
-pyz = PYZ(a.pure)
+
+pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 
 exe = EXE(
     pyz,
     a.scripts,
-    a.binaries,
-    a.datas,
     [],
-    name='auto1',
+    exclude_binaries=True,
+    name='STBAutoTool',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
     upx=True,
-    upx_exclude=[],
-    runtime_tmpdir=None,
-    console=False,
-    disable_windowed_traceback=False,
-    argv_emulation=False,
-    target_arch=None,
-    codesign_identity=None,
-    entitlements_file=None,
+    console=False,  # 改为 True 可调试打开控制台
+    icon=None
+)
+
+coll = COLLECT(
+    exe,
+    a.binaries,
+    a.zipfiles,
+    a.datas,
+    strip=False,
+    upx=True,
+    name='STBAutoTool'
 )
