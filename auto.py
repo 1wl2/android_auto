@@ -5,10 +5,22 @@ import time
 import tempfile
 import hashlib
 import subprocess
+import pandas as pd
+import matplotlib.pyplot as plt
+from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
+from matplotlib.backends.backend_qtagg import NavigationToolbar2QT as NavigationToolbar
+from matplotlib.figure import Figure
 from PyQt6.QtCore import Qt, QDateTime
 from PyQt6.QtWidgets import (QVBoxLayout, QFileDialog, QLabel, QDialog, QMessageBox, QTableWidget, QTableWidgetItem,
-                             QHeaderView, QCheckBox,
-                             QAbstractItemView, QDialogButtonBox, QProgressDialog, QApplication, QPushButton,QWidget, QHBoxLayout,QLineEdit, QTextEdit, )
+                             QHeaderView, QCheckBox, QAbstractItemView, QDialogButtonBox, QProgressDialog,
+                             QApplication, QPushButton, QWidget, QHBoxLayout, QLineEdit, QTextEdit,
+                             QListWidget, QListWidgetItem, QSplitter, QFrame)
+from PyQt6.QtCore import Qt
+
+# ✅ 防止中文乱码
+import matplotlib
+matplotlib.rcParams['font.sans-serif'] = ['SimHei']  # 支持中文，如“内存占用(MB)”
+matplotlib.rcParams['axes.unicode_minus'] = False
 
 
 class LogFileSelector(QDialog):
@@ -355,6 +367,7 @@ class STBTool(QWidget):
         self.reboot_btn = QPushButton("重启机顶盒", self)
         self.monitor_btn = QPushButton("性能监测", self)
         self.storage_btn = QPushButton("存储空间监测", self)
+        self.analysis_btn = QPushButton("性能分析功能", self)
 
 
         # ADB 命令输入框
@@ -376,6 +389,7 @@ class STBTool(QWidget):
         top_layout.addWidget(self.reboot_btn)
         top_layout.addWidget(self.monitor_btn)
         top_layout.addWidget(self.storage_btn)
+        top_layout.addWidget(self.analysis_btn)
 
         adb_layout = QHBoxLayout()
         adb_layout.addWidget(self.adb_command_input)
@@ -396,6 +410,7 @@ class STBTool(QWidget):
         self.run_adb_btn.clicked.connect(self.run_adb_command)
         self.monitor_btn.clicked.connect(self.show_performance_monitor)
         self.storage_btn.clicked.connect(self.show_storage_monitor)
+        self.analysis_btn.clicked.connect(self.show_performance_analysis)
 
     def log(self, message, command=False):
         """增强日志方法，实时刷新界面"""
@@ -637,6 +652,15 @@ class STBTool(QWidget):
         """显示存储空间监测对话框"""
         StorageMonitorDialog(self).exec()
 
+    def show_performance_analysis(self):
+        file_path, _ = QFileDialog.getOpenFileName(self, "选择性能监测文件", "", "CSV Files (*.csv);;All Files (*)")
+        if file_path:
+            try:
+                dialog = PerformanceAnalysisDialogV2(file_path, self)
+                dialog.exec()
+            except Exception as e:
+                QMessageBox.critical(self, "错误", f"无法分析文件: {str(e)}")
+                self.log(f"性能分析错误: {str(e)}")
 
 class LogSwitchDialog(QDialog):
     """日志开关配置对话框"""
@@ -1104,6 +1128,146 @@ class StorageMonitorDialog(QDialog):
         )
         return bool(output.strip())
 
+
+
+class PerformanceAnalysisDialogV2(QDialog):
+    def __init__(self, file_path, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("性能分析（王磊决定的展示方式）")
+        self.resize(1200, 800)  # 支持最大化窗口
+        self.setSizeGripEnabled(True)
+        self.setWindowFlags(self.windowFlags() | Qt.WindowType.WindowMinMaxButtonsHint)
+
+        self.file_path = file_path
+        self.data = None
+        self.process_data = {}
+        self.color_map = {}
+
+        self.load_data()
+
+        layout = QVBoxLayout(self)
+        splitter = QSplitter(Qt.Orientation.Horizontal)
+
+        # 左侧：进程选择
+        self.process_list = QListWidget()
+        self.process_list.setSelectionMode(QListWidget.SelectionMode.MultiSelection)
+        self.process_list.setStyleSheet("QListWidget::item:selected { background-color: #6fa8dc; color: black; }")
+        self.populate_process_list()
+        self.process_list.itemSelectionChanged.connect(self.update_plot)
+
+        btn_select_all = QPushButton("全选")
+        btn_select_all.clicked.connect(lambda: self.process_list.selectAll())
+        btn_clear = QPushButton("清除选择")
+        btn_clear.clicked.connect(lambda: self.process_list.clearSelection())
+
+        left_panel = QFrame()
+        left_layout = QVBoxLayout(left_panel)
+        left_layout.addWidget(QLabel("选择进程："))
+        left_layout.addWidget(self.process_list)
+        left_layout.addWidget(btn_select_all)
+        left_layout.addWidget(btn_clear)
+
+        # 右侧：图表区域
+        self.figure = Figure(figsize=(10, 8))
+        self.canvas = FigureCanvas(self.figure)
+        self.toolbar = NavigationToolbar(self.canvas, self)
+
+        right_panel = QFrame()
+        right_layout = QVBoxLayout(right_panel)
+        right_layout.addWidget(self.toolbar)
+        right_layout.addWidget(self.canvas)
+
+        splitter.addWidget(left_panel)
+        splitter.addWidget(right_panel)
+        splitter.setSizes([300, 900])
+        layout.addWidget(splitter)
+
+        self.select_default_processes()
+
+    def load_data(self):
+        self.data = pd.read_csv(self.file_path)
+
+        # 格式化列
+        self.data['timestamp'] = pd.to_datetime(self.data['timestamp'])
+        self.data['res'] = self.data['res'].apply(self.parse_memory)
+        self.data['process_id'] = self.data['pid'].astype(str) + ' - ' + self.data['args']
+
+        # 分组数据
+        for pid, group in self.data.groupby('process_id'):
+            self.process_data[pid] = group.sort_values('timestamp')
+
+        # 分配颜色
+        colors = plt.cm.tab20.colors  # 更多颜色
+        self.color_map = {pid: colors[i % len(colors)] for i, pid in enumerate(self.process_data.keys())}
+
+    def parse_memory(self, value):
+        try:
+            if isinstance(value, str):
+                if value.lower().endswith('g'):
+                    return float(value[:-1]) * 1024
+                elif value.lower().endswith('m'):
+                    return float(value[:-1])
+                elif value.lower().endswith('k'):
+                    return float(value[:-1]) / 1024
+            return float(value)
+        except:
+            return 0
+
+    def populate_process_list(self):
+        self.process_list.clear()
+        for pid in self.process_data:
+            item = QListWidgetItem(pid)
+            self.process_list.addItem(item)
+
+    def select_default_processes(self):
+        for i in range(self.process_list.count()):
+            self.process_list.item(i).setSelected(True)
+
+    def update_plot(self):
+        selected = [item.text() for item in self.process_list.selectedItems()]
+        self.figure.clear()
+
+        if not selected:
+            self.canvas.draw()
+            return
+
+        ax1 = self.figure.add_subplot(311)
+        ax2 = self.figure.add_subplot(312)
+        ax3 = self.figure.add_subplot(313)
+
+        ax1.set_title('内存占用 (MB)', loc='left')
+        ax2.set_title('CPU 使用率 (%)', loc='left')
+        ax3.set_title('内存使用率 (%)', loc='left')
+
+        for pid in selected:
+            df = self.process_data[pid]
+            color = self.color_map[pid]
+            ax1.plot(df['timestamp'], df['res'], label=pid, color=color)
+            ax2.plot(df['timestamp'], df['%cpu'], label=pid, color=color)
+            ax3.plot(df['timestamp'], df['%mem'], label=pid, color=color)
+
+        # 统一调整每个子图尺寸，预留右侧位置放图例
+        for ax in [ax1, ax2, ax3]:
+            box = ax.get_position()
+            ax.set_position([box.x0, box.y0, box.width * 0.97, box.height])  # 缩小宽度为 80%
+            ax.grid(True)
+            ax.set_ylabel('%')
+            ax.tick_params(axis='x', rotation=45)
+            ax.legend(
+                loc='upper left',
+                bbox_to_anchor=(1.01, 1),
+                fontsize=8,
+                frameon=True,
+                framealpha=0.9,
+                facecolor='white',
+                edgecolor='black',
+                labelspacing=0.3,
+                handlelength=1.8
+            )
+
+        ax3.set_xlabel('时间')
+        self.figure.tight_layout()
+        self.canvas.draw()
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
