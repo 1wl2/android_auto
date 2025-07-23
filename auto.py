@@ -10,7 +10,7 @@ import matplotlib.pyplot as plt
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.backends.backend_qtagg import NavigationToolbar2QT as NavigationToolbar
 from matplotlib.figure import Figure
-from PyQt6.QtCore import Qt, QDateTime
+from PyQt6.QtCore import Qt, QDateTime, QThread, pyqtSignal
 from PyQt6.QtWidgets import (QVBoxLayout, QFileDialog, QLabel, QDialog, QMessageBox, QTableWidget, QTableWidgetItem,
                              QHeaderView, QCheckBox, QAbstractItemView, QDialogButtonBox, QProgressDialog,
                              QApplication, QPushButton, QWidget, QHBoxLayout, QLineEdit, QTextEdit,
@@ -954,7 +954,7 @@ class PerformanceMonitorDialog(QDialog):
         return output.split()[0] if output else ""
 
 
-# 新增存储监测对话框类
+# 存储监测对话框类
 class StorageMonitorDialog(QDialog):
     """存储空间监测对话框"""
 
@@ -1129,51 +1129,85 @@ class StorageMonitorDialog(QDialog):
         return bool(output.strip())
 
 
-
 class PerformanceAnalysisDialogV2(QDialog):
     def __init__(self, file_path, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("性能分析（王磊决定的展示方式）")
-        self.resize(1200, 800)  # 支持最大化窗口
+        self.setWindowTitle("性能分析")
+        self.resize(1200, 800)
         self.setSizeGripEnabled(True)
         self.setWindowFlags(self.windowFlags() | Qt.WindowType.WindowMinMaxButtonsHint)
 
         self.file_path = file_path
         self.data = None
         self.process_data = {}
-        self.color_map = {}
+        self.args_to_pids = {}
+        self.unique_names = []
+        self.visible_pids = set()
+        self.is_multi_plot = True
 
-        self.load_data()
+        # 初始加载数据（使用线程避免界面卡死）
+        self.load_thread = LoadDataThread(file_path)
+        self.load_thread.data_loaded.connect(self.on_data_loaded)
+        self.load_thread.start()
 
+        # 主布局
         layout = QVBoxLayout(self)
+
+        # 添加图例开关按钮
+        switch_layout = QHBoxLayout()
+        self.multi_plot_btn = QPushButton("切换到单图模式")
+        self.multi_plot_btn.setCheckable(True)
+        self.multi_plot_btn.setChecked(False)
+        self.multi_plot_btn.clicked.connect(self.toggle_plot_mode)
+        switch_layout.addWidget(self.multi_plot_btn)
+
+        # 添加全选/清除按钮
+        self.select_all_btn = QPushButton("全选进程")
+        self.select_all_btn.clicked.connect(self.select_all_processes)
+        self.clear_btn = QPushButton("清除选择")
+        self.clear_btn.clicked.connect(self.clear_selection)
+        switch_layout.addWidget(self.select_all_btn)
+        switch_layout.addWidget(self.clear_btn)
+        switch_layout.addStretch()
+        layout.addLayout(switch_layout)
+
+        # 分割视图
         splitter = QSplitter(Qt.Orientation.Horizontal)
 
-        # 左侧：进程选择
+        # 左侧面板（进程选择）
+        left_panel = QWidget()
+        left_layout = QVBoxLayout(left_panel)
+        left_layout.addWidget(QLabel("选择进程名："))
+
+        # 进程选择列表（仅上半部分）
         self.process_list = QListWidget()
         self.process_list.setSelectionMode(QListWidget.SelectionMode.MultiSelection)
-        self.process_list.setStyleSheet("QListWidget::item:selected { background-color: #6fa8dc; color: black; }")
-        self.populate_process_list()
-        self.process_list.itemSelectionChanged.connect(self.update_plot)
+        self.process_list.setStyleSheet("""
+            QListWidget::item:selected { 
+                background-color: #6fa8dc; 
+                color: black; 
+            }
+        """)
 
-        btn_select_all = QPushButton("全选")
-        btn_select_all.clicked.connect(lambda: self.process_list.selectAll())
-        btn_clear = QPushButton("清除选择")
-        btn_clear.clicked.connect(lambda: self.process_list.clearSelection())
+        # 添加搜索框
+        search_layout = QHBoxLayout()
+        self.search_input = QLineEdit()
+        self.search_input.setPlaceholderText("搜索进程...")
+        self.search_input.textChanged.connect(self.filter_processes)
+        search_layout.addWidget(self.search_input)
+        left_layout.addLayout(search_layout)
 
-        left_panel = QFrame()
-        left_layout = QVBoxLayout(left_panel)
-        left_layout.addWidget(QLabel("选择进程："))
         left_layout.addWidget(self.process_list)
-        left_layout.addWidget(btn_select_all)
-        left_layout.addWidget(btn_clear)
+        left_layout.setStretch(1, 1)  # 让列表占据剩余空间
 
-        # 右侧：图表区域
+        # 右侧面板（图表）
+        right_panel = QWidget()
+        right_layout = QVBoxLayout(right_panel)
+
+        # 图表画布
         self.figure = Figure(figsize=(10, 8))
         self.canvas = FigureCanvas(self.figure)
         self.toolbar = NavigationToolbar(self.canvas, self)
-
-        right_panel = QFrame()
-        right_layout = QVBoxLayout(right_panel)
         right_layout.addWidget(self.toolbar)
         right_layout.addWidget(self.canvas)
 
@@ -1182,55 +1216,104 @@ class PerformanceAnalysisDialogV2(QDialog):
         splitter.setSizes([300, 900])
         layout.addWidget(splitter)
 
-        self.select_default_processes()
+        # 显示加载提示
+        self.loading_label = QLabel("正在加载数据，请稍候...", self)
+        self.loading_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.loading_label.setStyleSheet("font-size: 16px; color: #555;")
+        self.loading_label.setGeometry(0, 0, self.width(), self.height())
+        self.loading_label.show()
 
-    def load_data(self):
-        self.data = pd.read_csv(self.file_path)
+    def on_data_loaded(self, data, process_data, unique_names, args_to_pids):
+        self.data = data
+        self.process_data = process_data
+        self.args_to_pids = args_to_pids
+        self.unique_names = unique_names
 
-        # 格式化列
-        self.data['timestamp'] = pd.to_datetime(self.data['timestamp'])
-        self.data['res'] = self.data['res'].apply(self.parse_memory)
-        self.data['process_id'] = self.data['pid'].astype(str) + ' - ' + self.data['args']
+        # 分配颜色（PID+指标维度组合）
+        colors = plt.cm.tab20.colors
+        metrics = ['res', '%cpu', '%mem']
+        self.color_map = {}
+        for idx, (pid, _) in enumerate(process_data.items()):
+            for j, metric in enumerate(metrics):
+                key = f"{pid}_{metric}"
+                self.color_map[key] = colors[(3 * idx + j) % len(colors)]
 
-        # 分组数据
-        for pid, group in self.data.groupby('process_id'):
-            self.process_data[pid] = group.sort_values('timestamp')
-
-        # 分配颜色
-        colors = plt.cm.tab20.colors  # 更多颜色
-        self.color_map = {pid: colors[i % len(colors)] for i, pid in enumerate(self.process_data.keys())}
-
-    def parse_memory(self, value):
-        try:
-            if isinstance(value, str):
-                if value.lower().endswith('g'):
-                    return float(value[:-1]) * 1024
-                elif value.lower().endswith('m'):
-                    return float(value[:-1])
-                elif value.lower().endswith('k'):
-                    return float(value[:-1]) / 1024
-            return float(value)
-        except:
-            return 0
-
-    def populate_process_list(self):
+        # 填充进程名
         self.process_list.clear()
-        for pid in self.process_data:
-            item = QListWidgetItem(pid)
-            self.process_list.addItem(item)
+        for name in unique_names:
+            self.process_list.addItem(name)
+        self.process_list.itemSelectionChanged.connect(self.update_plot)
 
-    def select_default_processes(self):
+        self.select_all_processes()
+        self.loading_label.hide()
+        self.update_plot()
+
+    def select_all_processes(self):
+        """选中所有进程"""
         for i in range(self.process_list.count()):
             self.process_list.item(i).setSelected(True)
+        self.update_plot()
+
+    def clear_selection(self):
+        """清除所有选中"""
+        self.process_list.clearSelection()
+        self.update_plot()
+
+    def filter_processes(self):
+        """根据搜索框内容过滤进程"""
+        search_text = self.search_input.text().lower()
+        for i in range(self.process_list.count()):
+            item = self.process_list.item(i)
+            item.setHidden(search_text not in item.text().lower())
+
+    def toggle_plot_mode(self):
+        """切换多图/单图模式"""
+        self.is_multi_plot = not self.is_multi_plot
+        self.multi_plot_btn.setText("切换到单图模式" if self.is_multi_plot else "切换到多图模式")
+        self.update_plot()
 
     def update_plot(self):
-        selected = [item.text() for item in self.process_list.selectedItems()]
+        """更新图表（修复布尔判断问题）"""
+        # 检查数据是否加载 - 使用正确的方式
+        if self.data is None or self.data.empty:
+            return
+
+        # 获取选中的进程名
+        selected_names = set()
+        for i in range(self.process_list.count()):
+            if self.process_list.item(i).isSelected():
+                selected_names.add(self.process_list.item(i).text())
+
+        # 找出所有选中的进程名对应的process_id
+        selected_pids = set()
+        for name in selected_names:
+            if name in self.args_to_pids:
+                selected_pids.update(self.args_to_pids[name])
+
+        # 更新可见PID集合
+        self.visible_pids = selected_pids.copy()
+
+        # 清除图表
         self.figure.clear()
 
-        if not selected:
+        if not selected_pids:
             self.canvas.draw()
             return
 
+        if self.is_multi_plot:
+            # 多图模式
+            self.create_multi_plot(selected_pids)
+        else:
+            # 单图模式
+            self.create_single_plot(selected_pids)
+
+        # 添加图例交互
+        self.add_legend_interaction()
+
+        self.figure.tight_layout()
+        self.canvas.draw()
+
+    def create_multi_plot(self, selected_pids):
         ax1 = self.figure.add_subplot(311)
         ax2 = self.figure.add_subplot(312)
         ax3 = self.figure.add_subplot(313)
@@ -1239,35 +1322,217 @@ class PerformanceAnalysisDialogV2(QDialog):
         ax2.set_title('CPU 使用率 (%)', loc='left')
         ax3.set_title('内存使用率 (%)', loc='left')
 
-        for pid in selected:
+        handles1, labels1 = [], []
+        handles2, labels2 = [], []
+        handles3, labels3 = [], []
+
+        self.line_map = {}  # 用于图例交互控制
+
+        for pid in selected_pids:
             df = self.process_data[pid]
-            color = self.color_map[pid]
-            ax1.plot(df['timestamp'], df['res'], label=pid, color=color)
-            ax2.plot(df['timestamp'], df['%cpu'], label=pid, color=color)
-            ax3.plot(df['timestamp'], df['%mem'], label=pid, color=color)
+            alpha = 1.0 if pid in self.visible_pids else 0.3
 
-        # 统一调整每个子图尺寸，预留右侧位置放图例
+            l1, = ax1.plot(df['timestamp'], df['res'], label=pid,
+                           color=self.color_map.get(f"{pid}_res", 'tab:red'),
+                           alpha=alpha, visible=(pid in self.visible_pids))
+            handles1.append(l1)
+            labels1.append(pid)
+            self.line_map.setdefault(pid, []).append(l1)
+
+            l2, = ax2.plot(df['timestamp'], df['%cpu'], label=pid,
+                           color=self.color_map.get(f"{pid}_%cpu", 'tab:blue'),
+                           alpha=alpha, visible=(pid in self.visible_pids))
+            handles2.append(l2)
+            labels2.append(pid)
+            self.line_map.setdefault(pid, []).append(l2)
+
+            l3, = ax3.plot(df['timestamp'], df['%mem'], label=pid,
+                           color=self.color_map.get(f"{pid}_%mem", 'tab:green'),
+                           alpha=alpha, visible=(pid in self.visible_pids))
+            handles3.append(l3)
+            labels3.append(pid)
+            self.line_map.setdefault(pid, []).append(l3)
+
         for ax in [ax1, ax2, ax3]:
-            box = ax.get_position()
-            ax.set_position([box.x0, box.y0, box.width * 0.97, box.height])  # 缩小宽度为 80%
             ax.grid(True)
-            ax.set_ylabel('%')
             ax.tick_params(axis='x', rotation=45)
-            ax.legend(
-                loc='upper left',
-                bbox_to_anchor=(1.01, 1),
-                fontsize=8,
-                frameon=True,
-                framealpha=0.9,
-                facecolor='white',
-                edgecolor='black',
-                labelspacing=0.3,
-                handlelength=1.8
-            )
 
-        ax3.set_xlabel('时间')
-        self.figure.tight_layout()
-        self.canvas.draw()
+
+        # 图例放右外侧
+        leg1 = ax1.legend(handles1, labels1, loc='upper left', bbox_to_anchor=(1.01, 1))
+        leg2 = ax2.legend(handles2, labels2, loc='upper left', bbox_to_anchor=(1.01, 1))
+        leg3 = ax3.legend(handles3, labels3, loc='upper left', bbox_to_anchor=(1.01, 1))
+
+        # 设置图例项可点击
+        for leg, label_set in zip([leg1, leg2, leg3], [labels1, labels2, labels3]):
+            for i, text in enumerate(leg.get_texts()):
+                pid = label_set[i]
+                text.set_picker(True)
+                text.set_data = {"pid": pid}
+                if pid not in self.visible_pids:
+                    text.set_alpha(0.3)
+                    text.set_fontstyle("italic")
+
+        self.current_legends = [leg1, leg2, leg3]
+
+    def create_single_plot(self, selected_pids):
+        ax = self.figure.add_subplot(111)
+        ax.set_title('性能指标趋势', loc='left')
+        ax.grid(True)
+        ax.tick_params(axis='x', rotation=45)
+
+        ax2 = ax.twinx()
+        ax3 = ax.twinx()
+        ax3.spines['right'].set_position(('outward', 60))
+
+        handles = []
+        labels = []
+
+        for pid in selected_pids:
+            df = self.process_data[pid]
+            alpha = 1.0 if pid in self.visible_pids else 0.3
+
+            # 内存占用
+            l1, = ax.plot(df['timestamp'], df['res'],
+                          label=f"{pid} (内存)", color=self.color_map[f"{pid}_res"],
+                          linestyle='-', alpha=alpha, visible=(pid in self.visible_pids))
+            handles.append(l1)
+            labels.append(f"{pid} (内存)")
+
+            # CPU 使用率
+            l2, = ax3.plot(df['timestamp'], df['%cpu'],
+                           label=f"{pid} (CPU)", color=self.color_map[f"{pid}_%cpu"],
+                           linestyle='--', alpha=alpha, visible=(pid in self.visible_pids))
+            handles.append(l2)
+            labels.append(f"{pid} (CPU)")
+
+            # 内存使用率
+            l3, = ax2.plot(df['timestamp'], df['%mem'],
+                           label=f"{pid} (内存%)", color=self.color_map[f"{pid}_%mem"],
+                           linestyle=':', alpha=alpha, visible=(pid in self.visible_pids))
+            handles.append(l3)
+            labels.append(f"{pid} (内存%)")
+
+        ax.set_ylabel('内存占用 (MB)')
+        ax2.set_ylabel('内存使用率 (%)', color='tab:blue')
+        ax3.set_ylabel('CPU 使用率 (%)', color='tab:green')
+        ax2.tick_params(axis='y', labelcolor='tab:blue')
+        ax3.tick_params(axis='y', labelcolor='tab:green')
+
+        # 合并图例，添加交互
+        leg = ax.legend(handles, labels,
+                        loc='upper left',
+                        bbox_to_anchor=(1.01, 1),
+                        fontsize=8,
+                        frameon=True,
+                        framealpha=0.9,
+                        facecolor='white',
+                        edgecolor='black',
+                        labelspacing=0.3,
+                        handlelength=2,
+                        handler_map={})
+
+        # 设置图例可交互
+        for text, handle in zip(leg.get_texts(), leg.legend_handles):
+            text.set_picker(True)
+            handle.set_picker(True)
+
+        for i, text in enumerate(leg.get_texts()):
+            pid = labels[i].split(" (")[0]
+            if pid not in self.visible_pids:
+                text.set_alpha(0.3)
+                text.set_fontstyle("italic")
+            else:
+                text.set_alpha(1.0)
+                text.set_fontstyle("normal")
+
+        self.current_legend = leg
+
+    def add_legend_interaction(self):
+        if hasattr(self, 'legend_pick_event'):
+            self.canvas.mpl_disconnect(self.legend_pick_event)
+        self.legend_pick_event = self.canvas.mpl_connect('pick_event', self.on_legend_click)
+
+    def on_legend_click(self, event):
+        label = getattr(event.artist, "get_text", lambda: None)()
+        if not label:
+            return
+        pid = label.split(' (')[0] if ' (' in label else label
+
+        if pid in self.visible_pids:
+            self.visible_pids.remove(pid)
+        else:
+            self.visible_pids.add(pid)
+
+        # 更新每条线可见性
+        for line in self.line_map.get(pid, []):
+            line.set_visible(pid in self.visible_pids)
+
+        self.update_plot()
+
+
+class LoadDataThread(QThread):
+    """后台数据加载线程，避免界面卡死"""
+    data_loaded = pyqtSignal(object, object, object, object)
+
+    def __init__(self, file_path):
+        super().__init__()
+        self.file_path = file_path
+
+    def run(self):
+        """线程主函数"""
+        try:
+            # 加载数据
+            data = pd.read_csv(self.file_path)
+
+            # 检查数据是否为空
+            if data.empty:
+                self.data_loaded.emit(pd.DataFrame(), {}, [], {})
+                return
+
+            # 格式化列
+            data['timestamp'] = pd.to_datetime(data['timestamp'])
+            data['res'] = data['res'].apply(self.parse_memory)
+            data['process_id'] = data['pid'].astype(str) + ' - ' + data['args']
+
+            # 分组数据
+            process_data = {}
+            for pid, group in data.groupby('process_id'):
+                process_data[pid] = group.sort_values('timestamp')
+
+            # 获取唯一的进程名
+            unique_names = data['args'].unique().tolist()
+
+            # 构建进程名到PID的映射
+            args_to_pids = {}
+            for name in unique_names:
+                args_to_pids[name] = []
+                for pid in process_data:
+                    if name in pid:
+                        args_to_pids[name].append(pid)
+
+            # 发送加载完成信号
+            self.data_loaded.emit(data, process_data, unique_names, args_to_pids)
+
+        except Exception as e:
+            print(f"数据加载失败: {str(e)}")
+            self.data_loaded.emit(pd.DataFrame(), {}, [], {})
+
+    def parse_memory(self, value):
+        """解析内存值"""
+        try:
+            if isinstance(value, str):
+                value = value.lower()
+                if value.endswith('g'):
+                    return float(value[:-1]) * 1024
+                elif value.endswith('m'):
+                    return float(value[:-1])
+                elif value.endswith('k'):
+                    return float(value[:-1]) / 1024
+            return float(value)
+        except:
+            return 0
+
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
