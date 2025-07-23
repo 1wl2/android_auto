@@ -1274,6 +1274,15 @@ class PerformanceAnalysisDialogV2(QDialog):
 
     def update_plot(self):
         """更新图表（修复布尔判断问题）"""
+        # 在开头添加以下代码
+        # 重置可见性状态
+        self.visible_pids = set()
+        for i in range(self.process_list.count()):
+            if self.process_list.item(i).isSelected():
+                name = self.process_list.item(i).text()
+                if name in self.args_to_pids:
+                    self.visible_pids.update(self.args_to_pids[name])
+
         # 检查数据是否加载 - 使用正确的方式
         if self.data is None or self.data.empty:
             return
@@ -1367,15 +1376,23 @@ class PerformanceAnalysisDialogV2(QDialog):
         for leg, label_set in zip([leg1, leg2, leg3], [labels1, labels2, labels3]):
             for i, text in enumerate(leg.get_texts()):
                 pid = label_set[i]
-                text.set_picker(True)
-                text.set_data = {"pid": pid}
+                # 存储pid到图例文本中
+                text.set_gid(pid)
                 if pid not in self.visible_pids:
                     text.set_alpha(0.3)
                     text.set_fontstyle("italic")
 
         self.current_legends = [leg1, leg2, leg3]
 
+        # 添加图例交互
+        self.create_legend_interaction(leg1)
+        self.create_legend_interaction(leg2)
+        self.create_legend_interaction(leg3)
+
     def create_single_plot(self, selected_pids):
+        # 初始化line_map（如果之前没有初始化）
+        self.line_map = {}
+
         ax = self.figure.add_subplot(111)
         ax.set_title('性能指标趋势', loc='left')
         ax.grid(True)
@@ -1398,6 +1415,8 @@ class PerformanceAnalysisDialogV2(QDialog):
                           linestyle='-', alpha=alpha, visible=(pid in self.visible_pids))
             handles.append(l1)
             labels.append(f"{pid} (内存)")
+            # 将这条线添加到line_map中
+            self.line_map.setdefault(pid, []).append(l1)
 
             # CPU 使用率
             l2, = ax3.plot(df['timestamp'], df['%cpu'],
@@ -1405,6 +1424,8 @@ class PerformanceAnalysisDialogV2(QDialog):
                            linestyle='--', alpha=alpha, visible=(pid in self.visible_pids))
             handles.append(l2)
             labels.append(f"{pid} (CPU)")
+            # 将这条线添加到line_map中
+            self.line_map.setdefault(pid, []).append(l2)
 
             # 内存使用率
             l3, = ax2.plot(df['timestamp'], df['%mem'],
@@ -1412,6 +1433,8 @@ class PerformanceAnalysisDialogV2(QDialog):
                            linestyle=':', alpha=alpha, visible=(pid in self.visible_pids))
             handles.append(l3)
             labels.append(f"{pid} (内存%)")
+            # 将这条线添加到line_map中
+            self.line_map.setdefault(pid, []).append(l3)
 
         ax.set_ylabel('内存占用 (MB)')
         ax2.set_ylabel('内存使用率 (%)', color='tab:blue')
@@ -1433,20 +1456,28 @@ class PerformanceAnalysisDialogV2(QDialog):
                         handler_map={})
 
         # 设置图例可交互
-        for text, handle in zip(leg.get_texts(), leg.legend_handles):
-            text.set_picker(True)
-            handle.set_picker(True)
-
-        for i, text in enumerate(leg.get_texts()):
-            pid = labels[i].split(" (")[0]
-            if pid not in self.visible_pids:
-                text.set_alpha(0.3)
-                text.set_fontstyle("italic")
+        for text in leg.get_texts():
+            # 提取pid并存储
+            label_text = text.get_text()
+            if ' (' in label_text:
+                pid = label_text.split(' (')[0]
             else:
+                pid = label_text
+            text.set_gid(pid)  # 存储pid信息
+
+            # 设置初始样式
+            if pid in self.visible_pids:
                 text.set_alpha(1.0)
                 text.set_fontstyle("normal")
+            else:
+                text.set_alpha(0.3)
+                text.set_fontstyle("italic")
+            text.set_picker(True)  # 启用拾取功能
 
         self.current_legend = leg
+
+        # 添加图例交互
+        self.create_legend_interaction(leg)
 
     def add_legend_interaction(self):
         if hasattr(self, 'legend_pick_event'):
@@ -1454,22 +1485,109 @@ class PerformanceAnalysisDialogV2(QDialog):
         self.legend_pick_event = self.canvas.mpl_connect('pick_event', self.on_legend_click)
 
     def on_legend_click(self, event):
-        label = getattr(event.artist, "get_text", lambda: None)()
-        if not label:
+        """处理图例点击事件 - 切换整个pid的可见性"""
+        artist = event.artist
+        # 获取存储的pid信息
+        pid = artist.get_gid()
+        if not pid:
             return
-        pid = label.split(' (')[0] if ' (' in label else label
 
+        # 切换该pid的可见状态
         if pid in self.visible_pids:
             self.visible_pids.remove(pid)
         else:
             self.visible_pids.add(pid)
 
-        # 更新每条线可见性
-        for line in self.line_map.get(pid, []):
-            line.set_visible(pid in self.visible_pids)
+        # 更新该pid对应的所有线条
+        if pid in self.line_map:
+            for line in self.line_map[pid]:
+                line.set_visible(pid in self.visible_pids)
 
-        self.update_plot()
+        # 更新所有图例项的样式
+        self.update_legend_style()
 
+        # 重绘图表
+        self.canvas.draw()
+
+    def create_legend_interaction(self, leg):
+        """创建图例交互功能，支持点击图例控制整个pid的可见性"""
+        # 为图例中的每个文本项添加点击事件
+        for text in leg.get_texts():
+            text.set_picker(True)  # 启用拾取功能
+            # 提取并存储pid信息（处理带括号的情况）
+            label_text = text.get_text()
+            if ' (' in label_text:
+                pid = label_text.split(' (')[0]
+            else:
+                pid = label_text
+            text.set_gid(pid)  # 使用set_gid存储pid信息
+
+        # 连接点击事件
+        if hasattr(self, 'legend_pick_event'):
+            self.canvas.mpl_disconnect(self.legend_pick_event)
+        self.legend_pick_event = self.canvas.mpl_connect('pick_event', self.on_legend_click)
+
+    def on_legend_click(self, event):
+        """处理图例点击事件 - 切换整个pid的可见性"""
+        artist = event.artist
+        # 获取存储的pid信息
+        pid = artist.get_gid()
+        if not pid:
+            return
+
+        # 切换该pid的可见状态
+        if pid in self.visible_pids:
+            self.visible_pids.remove(pid)
+        else:
+            self.visible_pids.add(pid)
+
+        # 更新该pid对应的所有线条
+        if pid in self.line_map:
+            for line in self.line_map[pid]:
+                line.set_visible(pid in self.visible_pids)
+
+        # 更新所有图例项的样式
+        self.update_legend_style()
+
+        # 重绘图表
+        self.canvas.draw()
+
+    def update_legend_style(self):
+        """更新所有图例项的样式（隐藏时置灰）"""
+        # 更新多图模式下的图例
+        if hasattr(self, 'current_legends'):
+            for leg in self.current_legends:
+                for text in leg.get_texts():
+                    # 从文本中提取pid（处理带括号的情况）
+                    label_text = text.get_text()
+                    if ' (' in label_text:
+                        pid = label_text.split(' (')[0]
+                    else:
+                        pid = label_text
+
+                    if pid in self.visible_pids:
+                        text.set_alpha(1.0)
+                        text.set_fontstyle("normal")
+                    else:
+                        text.set_alpha(0.3)
+                        text.set_fontstyle("italic")
+
+        # 更新单图模式下的图例
+        if hasattr(self, 'current_legend'):
+            for text in self.current_legend.get_texts():
+                # 从文本中提取pid（处理带括号的情况）
+                label_text = text.get_text()
+                if ' (' in label_text:
+                    pid = label_text.split(' (')[0]
+                else:
+                    pid = label_text
+
+                if pid in self.visible_pids:
+                    text.set_alpha(1.0)
+                    text.set_fontstyle("normal")
+                else:
+                    text.set_alpha(0.3)
+                    text.set_fontstyle("italic")
 
 class LoadDataThread(QThread):
     """后台数据加载线程，避免界面卡死"""
