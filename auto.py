@@ -4,6 +4,7 @@ import re
 import time
 import tempfile
 import hashlib
+import traceback
 import subprocess
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -14,13 +15,22 @@ from PyQt6.QtCore import Qt, QDateTime, QThread, pyqtSignal
 from PyQt6.QtWidgets import (QVBoxLayout, QFileDialog, QLabel, QDialog, QMessageBox, QTableWidget, QTableWidgetItem,
                              QHeaderView, QCheckBox, QAbstractItemView, QDialogButtonBox, QProgressDialog,
                              QApplication, QPushButton, QWidget, QHBoxLayout, QLineEdit, QTextEdit,
-                             QListWidget, QListWidgetItem, QSplitter, QFrame)
-from PyQt6.QtCore import Qt
+                             QListWidget, QSplitter, QFrame)
 
 # ✅ 防止中文乱码
 import matplotlib
+
 matplotlib.rcParams['font.sans-serif'] = ['SimHei']  # 支持中文，如“内存占用(MB)”
 matplotlib.rcParams['axes.unicode_minus'] = False
+
+# 将所有异常写入日志文件
+def log_exceptions(exctype, value, tb):
+    with open("error_log.txt", "w", encoding="utf-8") as f:
+        traceback.print_exception(exctype, value, tb, file=f)
+    sys.__excepthook__(exctype, value, tb)
+
+
+sys.excepthook = log_exceptions
 
 
 class LogFileSelector(QDialog):
@@ -369,7 +379,6 @@ class STBTool(QWidget):
         self.storage_btn = QPushButton("存储空间监测", self)
         self.analysis_btn = QPushButton("性能分析功能", self)
 
-
         # ADB 命令输入框
         self.adb_command_input = QLineEdit(self)
         self.adb_command_input.setPlaceholderText("输入ADB命令")
@@ -662,6 +671,7 @@ class STBTool(QWidget):
                 QMessageBox.critical(self, "错误", f"无法分析文件: {str(e)}")
                 self.log(f"性能分析错误: {str(e)}")
 
+
 class LogSwitchDialog(QDialog):
     """日志开关配置对话框"""
 
@@ -864,29 +874,45 @@ class PerformanceMonitorDialog(QDialog):
             QMessageBox.warning(self, "错误", "启动监测失败，请检查设备日志")
 
     def stop_monitoring(self):
-        """停止性能监测（使用PID文件中的进程ID）"""
-        if not hasattr(self, 'current_pid') or not self.current_pid:
-            QMessageBox.warning(self, "警告", "未找到运行中的监测进程")
+        """改进的停止监测方法，实时读取PID文件并验证"""
+        # 实时读取PID文件内容
+        pid_output = self.parent.run_adb(
+            f'-s {self.parent.ip_input.text()} shell "cat /sdcard/performance.pid 2>/dev/null"'
+        ).strip()
+
+        if not pid_output or not pid_output.isdigit():
+            QMessageBox.warning(self, "警告", "未找到有效的监测进程PID")
             return
 
-        # 验证进程是否存在
+        current_pid = pid_output
+
+        # 使用更通用的方式检查进程是否存在
         check_output = self.parent.run_adb(
-            f'-s {self.parent.ip_input.text()} shell "ps -p {self.current_pid}"'
+            f'-s {self.parent.ip_input.text()} shell "ps -A| grep -w {current_pid} | grep -v grep"'
         )
-        if "No such process" in check_output:
-            self.parent.log(f"进程已终止（PID: {self.current_pid}）")
-            QMessageBox.information(self, "提示", "进程已终止")
+
+        if not check_output.strip():
+            QMessageBox.information(self, "提示", f"进程 {current_pid} 已终止")
             return
 
         # 终止进程
         output = self.parent.run_adb(
-            f'-s {self.parent.ip_input.text()} shell "kill {self.current_pid}"'
+            f'-s {self.parent.ip_input.text()} shell "kill -9 {current_pid}"'
         )
-        if "error" not in output.lower():
-            self.parent.log(f"已停止监测进程（PID: {self.current_pid}）")
-            QMessageBox.information(self, "成功", "已停止性能监测")
+
+        # 删除PID文件
+        self.parent.run_adb(
+            f'-s {self.parent.ip_input.text()} shell "rm /sdcard/performance.pid"'
+        )
+
+        # 验证是否终止
+        check_output = self.parent.run_adb(
+            f'-s {self.parent.ip_input.text()} shell "ps | grep -w {current_pid} | grep -v grep"'
+        )
+
+        if not check_output.strip():
+            QMessageBox.information(self, "成功", f"已停止监测进程(PID: {current_pid})")
         else:
-            self.parent.log(f"终止进程失败（PID: {self.current_pid}）")
             QMessageBox.warning(self, "错误", "终止进程失败")
 
     def extract_logs(self):
@@ -1145,10 +1171,10 @@ class PerformanceAnalysisDialogV2(QDialog):
         self.visible_pids = set()
         self.is_multi_plot = True
 
-        # 初始加载数据（使用线程避免界面卡死）
-        self.load_thread = LoadDataThread(file_path)
-        self.load_thread.data_loaded.connect(self.on_data_loaded)
-        self.load_thread.start()
+        # 添加指标筛选状态
+        self.show_res = True
+        self.show_cpu = True
+        self.show_mem = True
 
         # 主布局
         layout = QVBoxLayout(self)
@@ -1168,6 +1194,32 @@ class PerformanceAnalysisDialogV2(QDialog):
         self.clear_btn.clicked.connect(self.clear_selection)
         switch_layout.addWidget(self.select_all_btn)
         switch_layout.addWidget(self.clear_btn)
+
+        # 添加指标筛选框（初始隐藏，在单图模式下显示）
+        self.metric_filter_frame = QFrame()
+        # 修复：使用正确的枚举值
+        self.metric_filter_frame.setFrameShape(QFrame.Shape.StyledPanel)
+        self.metric_filter_layout = QHBoxLayout(self.metric_filter_frame)
+        self.metric_filter_layout.addWidget(QLabel("显示指标:"))
+
+        self.res_checkbox = QCheckBox("内存占用")
+        self.res_checkbox.setChecked(True)
+        self.res_checkbox.stateChanged.connect(self.update_plot)
+        self.metric_filter_layout.addWidget(self.res_checkbox)
+
+        self.cpu_checkbox = QCheckBox("CPU使用率")
+        self.cpu_checkbox.setChecked(True)
+        self.cpu_checkbox.stateChanged.connect(self.update_plot)
+        self.metric_filter_layout.addWidget(self.cpu_checkbox)
+
+        self.mem_checkbox = QCheckBox("内存使用率")
+        self.mem_checkbox.setChecked(True)
+        self.mem_checkbox.stateChanged.connect(self.update_plot)
+        self.metric_filter_layout.addWidget(self.mem_checkbox)
+
+        self.metric_filter_frame.setVisible(False)  # 初始隐藏
+        switch_layout.addWidget(self.metric_filter_frame)
+
         switch_layout.addStretch()
         layout.addLayout(switch_layout)
 
@@ -1220,10 +1272,19 @@ class PerformanceAnalysisDialogV2(QDialog):
         self.loading_label = QLabel("正在加载数据，请稍候...", self)
         self.loading_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.loading_label.setStyleSheet("font-size: 16px; color: #555;")
-        self.loading_label.setGeometry(0, 0, self.width(), self.height())
-        self.loading_label.show()
+        # 使用布局而不是setGeometry
+        layout.addWidget(self.loading_label)
+
+        # 在UI完全初始化后启动数据加载
+        self.load_thread = LoadDataThread(file_path)
+        self.load_thread.data_loaded.connect(self.on_data_loaded)
+        self.load_thread.start()
 
     def on_data_loaded(self, data, process_data, unique_names, args_to_pids):
+        # 确保UI组件已初始化
+        if not hasattr(self, 'process_list'):
+            return
+
         self.data = data
         self.process_data = process_data
         self.args_to_pids = args_to_pids
@@ -1270,6 +1331,10 @@ class PerformanceAnalysisDialogV2(QDialog):
         """切换多图/单图模式"""
         self.is_multi_plot = not self.is_multi_plot
         self.multi_plot_btn.setText("切换到单图模式" if self.is_multi_plot else "切换到多图模式")
+
+        # 显示/隐藏指标筛选框
+        self.metric_filter_frame.setVisible(not self.is_multi_plot)
+
         self.update_plot()
 
     def update_plot(self):
@@ -1319,7 +1384,11 @@ class PerformanceAnalysisDialogV2(QDialog):
         # 添加图例交互
         self.add_legend_interaction()
 
-        self.figure.tight_layout()
+        try:
+            self.figure.tight_layout(pad=2.0, h_pad=1.5, w_pad=1.5)
+        except Exception:
+            # 如果tight_layout失败，使用constrained_layout
+            self.figure.set_constrained_layout(True)
         self.canvas.draw()
 
     def create_multi_plot(self, selected_pids):
@@ -1366,7 +1435,6 @@ class PerformanceAnalysisDialogV2(QDialog):
             ax.grid(True)
             ax.tick_params(axis='x', rotation=45)
 
-
         # 图例放右外侧
         leg1 = ax1.legend(handles1, labels1, loc='upper left', bbox_to_anchor=(1.01, 1))
         leg2 = ax2.legend(handles2, labels2, loc='upper left', bbox_to_anchor=(1.01, 1))
@@ -1404,43 +1472,60 @@ class PerformanceAnalysisDialogV2(QDialog):
 
         handles = []
         labels = []
+        added_pids = set()
+        
+        # 获取指标筛选状态
+        self.show_res = self.res_checkbox.isChecked()
+        self.show_cpu = self.cpu_checkbox.isChecked()
+        self.show_mem = self.mem_checkbox.isChecked()
 
         for pid in selected_pids:
             df = self.process_data[pid]
             alpha = 1.0 if pid in self.visible_pids else 0.3
 
             # 内存占用
-            l1, = ax.plot(df['timestamp'], df['res'],
-                          label=f"{pid} (内存)", color=self.color_map[f"{pid}_res"],
-                          linestyle='-', alpha=alpha, visible=(pid in self.visible_pids))
-            handles.append(l1)
-            labels.append(f"{pid} (内存)")
-            # 将这条线添加到line_map中
-            self.line_map.setdefault(pid, []).append(l1)
+            if self.show_res:
+                l1, = ax.plot(df['timestamp'], df['res'],
+                              label=f"{pid} (内存)", color=self.color_map[f"{pid}_res"],
+                              linestyle='-', alpha=alpha, visible=(pid in self.visible_pids))
+                handles.append(l1)
+                labels.append(f"{pid} (内存)")
+                # 将这条线添加到line_map中
+                self.line_map.setdefault(pid, []).append(l1)
 
             # CPU 使用率
-            l2, = ax3.plot(df['timestamp'], df['%cpu'],
-                           label=f"{pid} (CPU)", color=self.color_map[f"{pid}_%cpu"],
-                           linestyle='--', alpha=alpha, visible=(pid in self.visible_pids))
-            handles.append(l2)
-            labels.append(f"{pid} (CPU)")
-            # 将这条线添加到line_map中
-            self.line_map.setdefault(pid, []).append(l2)
+            if self.show_cpu:
+                l2, = ax3.plot(df['timestamp'], df['%cpu'],
+                               label=f"{pid} (CPU)", color=self.color_map[f"{pid}_%cpu"],
+                               linestyle='--', alpha=alpha, visible=(pid in self.visible_pids))
+                handles.append(l2)
+                labels.append(f"{pid} (CPU)")
+                # 将这条线添加到line_map中
+                self.line_map.setdefault(pid, []).append(l2)
 
             # 内存使用率
-            l3, = ax2.plot(df['timestamp'], df['%mem'],
-                           label=f"{pid} (内存%)", color=self.color_map[f"{pid}_%mem"],
-                           linestyle=':', alpha=alpha, visible=(pid in self.visible_pids))
-            handles.append(l3)
-            labels.append(f"{pid} (内存%)")
-            # 将这条线添加到line_map中
-            self.line_map.setdefault(pid, []).append(l3)
+            if self.show_mem:
+                l3, = ax2.plot(df['timestamp'], df['%mem'],
+                               label=f"{pid} (内存%)", color=self.color_map[f"{pid}_%mem"],
+                               linestyle=':', alpha=alpha, visible=(pid in self.visible_pids))
+                handles.append(l3)
+                labels.append(f"{pid} (内存%)")
+                # 将这条线添加到line_map中
+                self.line_map.setdefault(pid, []).append(l3)
 
         ax.set_ylabel('内存占用 (MB)')
-        ax2.set_ylabel('内存使用率 (%)', color='tab:blue')
-        ax3.set_ylabel('CPU 使用率 (%)', color='tab:green')
-        ax2.tick_params(axis='y', labelcolor='tab:blue')
-        ax3.tick_params(axis='y', labelcolor='tab:green')
+
+        if self.show_mem:
+            ax2.set_ylabel('内存使用率 (%)', color='tab:blue')
+            ax2.tick_params(axis='y', labelcolor='tab:blue')
+        else:
+            ax2.set_visible(False)
+
+        if self.show_cpu:
+            ax3.set_ylabel('CPU 使用率 (%)', color='tab:green')
+            ax3.tick_params(axis='y', labelcolor='tab:green')
+        else:
+            ax3.set_visible(False)
 
         # 合并图例，添加交互
         leg = ax.legend(handles, labels,
@@ -1589,6 +1674,7 @@ class PerformanceAnalysisDialogV2(QDialog):
                     text.set_alpha(0.3)
                     text.set_fontstyle("italic")
 
+
 class LoadDataThread(QThread):
     """后台数据加载线程，避免界面卡死"""
     data_loaded = pyqtSignal(object, object, object, object)
@@ -1608,9 +1694,34 @@ class LoadDataThread(QThread):
                 self.data_loaded.emit(pd.DataFrame(), {}, [], {})
                 return
 
-            # 格式化列
+            # 动态检测列名（不区分大小写）
+            col_mapping = {}
+            required_columns = ['timestamp', 'res', '%cpu', '%mem', 'args', 'pid']
+
+            for col in required_columns:
+                # 查找实际列名（兼容大小写和空格）
+                actual_col = next(
+                    (c for c in data.columns if c.lower().replace(' ', '') == col.lower().replace(' ', '')),
+                    None
+                )
+                if actual_col:
+                    col_mapping[col] = actual_col
+                else:
+                    raise ValueError(f"缺少必需列: {col}")
+
+            # 重命名列为标准化名称
+            data = data.rename(columns={v: k for k, v in col_mapping.items()})
+
+            # 确保args列是字符串类型
+            data['args'] = data['args'].astype(str)  # 关键修复：强制转换为字符串
+
+            # 格式化时间戳
             data['timestamp'] = pd.to_datetime(data['timestamp'])
+
+            # 转换内存单位（兼容不同格式）
             data['res'] = data['res'].apply(self.parse_memory)
+
+            # 创建唯一进程ID（PID + 进程名）
             data['process_id'] = data['pid'].astype(str) + ' - ' + data['args']
 
             # 分组数据
@@ -1618,39 +1729,61 @@ class LoadDataThread(QThread):
             for pid, group in data.groupby('process_id'):
                 process_data[pid] = group.sort_values('timestamp')
 
-            # 获取唯一的进程名
-            unique_names = data['args'].unique().tolist()
+            # 获取唯一的进程名（确保字符串类型）
+            unique_names = data['args'].unique().astype(str).tolist()  # 关键修复：转换为字符串列表
 
             # 构建进程名到PID的映射
             args_to_pids = {}
             for name in unique_names:
-                args_to_pids[name] = []
-                for pid in process_data:
-                    if name in pid:
-                        args_to_pids[name].append(pid)
+                # 确保name是字符串
+                str_name = str(name)  # 双重保险：转换为字符串
+                args_to_pids[str_name] = [
+                    pid for pid in process_data
+                    if str_name in pid.split(' - ', 1)[1]
+                ]
 
             # 发送加载完成信号
             self.data_loaded.emit(data, process_data, unique_names, args_to_pids)
 
         except Exception as e:
             print(f"数据加载失败: {str(e)}")
+            traceback.print_exc()
             self.data_loaded.emit(pd.DataFrame(), {}, [], {})
 
     def parse_memory(self, value):
-        """解析内存值"""
+        """更健壮的内存值解析"""
         try:
-            if isinstance(value, str):
-                value = value.lower()
-                if value.endswith('g'):
-                    return float(value[:-1]) * 1024
-                elif value.endswith('m'):
-                    return float(value[:-1])
-                elif value.endswith('k'):
-                    return float(value[:-1]) / 1024
-            return float(value)
-        except:
-            return 0
+            # 处理空值
+            if pd.isna(value):
+                return 0.0
 
+            # 如果是字符串，清理数据
+            if isinstance(value, str):
+                # 移除逗号（如1,024 -> 1024）
+                value = value.replace(',', '').strip()
+
+            # 尝试直接转换为浮点数
+            num_value = float(value)
+
+            # 假设单位是KB（Linux top默认）
+            return num_value / 1024  # 转换为MB
+
+        except ValueError:
+            # 处理带单位的值
+            try:
+                text = str(value).strip().lower()
+                if text.endswith('g'):
+                    return float(text[:-1]) * 1024
+                elif text.endswith('m'):
+                    return float(text[:-1])
+                elif text.endswith('k'):
+                    return float(text[:-1]) / 1024
+                else:
+                    return 0.0
+            except:
+                return 0.0
+        except Exception:
+            return 0.0
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
