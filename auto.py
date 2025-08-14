@@ -1785,6 +1785,7 @@ class LoadDataThread(QThread):
         except Exception:
             return 0.0
 
+
 if __name__ == "__main__":
     app = QApplication(sys.argv)
     window = STBTool()
