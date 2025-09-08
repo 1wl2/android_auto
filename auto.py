@@ -413,13 +413,15 @@ class STBTool(QWidget):
 
         # 绑定事件
         self.connect_btn.clicked.connect(self.connect_stb)
-        self.deploy_btn.clicked.connect(self.deploy_files)
+        self.deploy_btn.clicked.connect(self.show_deploy_options)
         self.other_ops_btn.clicked.connect(self.other_operations)
         self.reboot_btn.clicked.connect(self.reboot_stb)
         self.run_adb_btn.clicked.connect(self.run_adb_command)
         self.monitor_btn.clicked.connect(self.show_performance_monitor)
         self.storage_btn.clicked.connect(self.show_storage_monitor)
         self.analysis_btn.clicked.connect(self.show_performance_analysis)
+        # 为ADB命令输入框绑定回车键事件
+        self.adb_command_input.returnPressed.connect(self.run_adb_command)
 
     def log(self, message, command=False):
         """增强日志方法，实时刷新界面"""
@@ -513,46 +515,158 @@ class STBTool(QWidget):
         else:
             self.log(f"连接失败：{output}")
 
-    def deploy_files(self):
-        """增强部署日志"""
-        self.log("开始部署流程")
+    def show_deploy_options(self):
+        """显示部署选项对话框"""
+        self.log("选择部署类型")
+        dialog = QDialog(self)
+        dialog.setWindowTitle("部署选项")
+        dialog.setFixedSize(300, 150)
+
+        layout = QVBoxLayout()
+
+        # 整体部署按钮
+        btn_folder_deploy = QPushButton("整体部署", dialog)
+        btn_folder_deploy.clicked.connect(lambda: self.deploy_folder())
+        layout.addWidget(btn_folder_deploy)
+
+        # 单文件部署按钮
+        btn_single_deploy = QPushButton("单文件部署", dialog)
+        btn_single_deploy.clicked.connect(lambda: self.deploy_single_file())
+        layout.addWidget(btn_single_deploy)
+
+        dialog.setLayout(layout)
+        dialog.exec()
+
+    def deploy_folder(self):
+        """整体部署（原有功能）"""
+        self.log("开始整体部署流程")
         folder = QFileDialog.getExistingDirectory(self, "选择部署文件夹")
         if not folder:
             self.log("部署取消：未选择文件夹")
             return
 
         self.log(f"选择的部署文件夹: {folder}")
-        if folder:
-            # 部署startstbagent.sh
-            sh_path = os.path.join(folder, 'startstbagent.sh')
-            if os.path.exists(sh_path):
-                self.log("部署startstbagent.sh...")
-                output = self.run_adb(f'push "{sh_path}" /system/bin/')
-                self.run_adb("shell chmod 755 /system/bin/startstbagent.sh")
-            else:
-                self.log("未找到startstbagent.sh文件", command=True)
+        self._perform_deployment(folder)
 
-            # 部署testagent
-            sh_path = os.path.join(folder, 'testagent')
-            if os.path.exists(sh_path):
-                self.log("部署testagent...")
-                output = self.run_adb(f'push "{sh_path}" /system/bin/')
-                self.run_adb("shell chmod 755 /system/bin/testagent")
-            else:
-                self.log("未找到testagent文件", command=True)
+    def deploy_single_file(self):
+        """单文件部署"""
+        self.log("开始单文件部署流程")
+        
+        # 定义支持的文件类型
+        supported_files = {
+            "STBIQ APK文件 (STBIQ*.apk)": "STBIQ*.apk",
+            "testagent文件 (testagent)": "testagent",
+            "startstbagent.sh文件 (startstbagent.sh)": "startstbagent.sh",
+            "所有支持文件 (*)": "*"
+        }
+        
+        # 构建文件过滤器字符串
+        file_filter = ";;".join(supported_files.keys())
+        
+        # 选择文件
+        file_path, selected_filter = QFileDialog.getOpenFileName(
+            self, 
+            "选择要部署的文件", 
+            "", 
+            file_filter
+        )
+        
+        if not file_path:
+            self.log("部署取消：未选择文件")
+            return
+            
+        self.log(f"选择的部署文件: {file_path}")
+        
+        # 获取文件名
+        filename = os.path.basename(file_path)
+        
+        # 根据文件类型进行部署
+        if filename == "startstbagent.sh":
+            self._deploy_startstbagent(file_path)
+        elif filename == "testagent":
+            self._deploy_testagent(file_path)
+        elif filename.startswith("STBIQ") and filename.endswith(".apk"):
+            self._deploy_stbiq_apk(file_path)
+        else:
+            QMessageBox.warning(self, "警告", f"不支持的文件类型: {filename}")
+            self.log(f"不支持的文件类型: {filename}")
+            return
+            
+        self.log("单文件部署完成")
+        QMessageBox.information(self, "完成", f"文件 {filename} 部署完成！")
 
-            # 处理 STBIQ APK
-            apk_files = [f for f in os.listdir(folder) if f.startswith("STBIQ") and f.endswith(".apk")]
-            if apk_files:
-                apk_path = os.path.join(folder, apk_files[0])
-                if os.path.exists(sh_path):
-                    self.log("部署STBIQ APK...")
-                    self.run_adb("shell rm -rf /system/app/STBIQ*.apk")  # 删除旧版本
-                    self.run_adb(f'push "{apk_path}" /system/app/')
-                else:
-                    self.log("未找到STBIQ APK文件", command=True)
+    def _deploy_startstbagent(self, file_path):
+        """部署startstbagent.sh文件"""
+        self.log("部署startstbagent.sh...")
+        ip = self.ip_input.text().strip()
+        if not ip:
+            QMessageBox.warning(self, "警告", "请先连接设备")
+            return
+            
+        output = self.run_adb(f'-s {ip} push "{file_path}" /system/bin/')
+        self.run_adb(f'-s {ip} shell chmod 755 /system/bin/startstbagent.sh')
+        
+    def _deploy_testagent(self, file_path):
+        """部署testagent文件"""
+        self.log("部署testagent...")
+        ip = self.ip_input.text().strip()
+        if not ip:
+            QMessageBox.warning(self, "警告", "请先连接设备")
+            return
+            
+        output = self.run_adb(f'-s {ip} push "{file_path}" /system/bin/')
+        self.run_adb(f'-s {ip} shell chmod 755 /system/bin/testagent')
+        
+    def _deploy_stbiq_apk(self, file_path):
+        """部署STBIQ APK文件"""
+        self.log("部署STBIQ APK...")
+        ip = self.ip_input.text().strip()
+        if not ip:
+            QMessageBox.warning(self, "警告", "请先连接设备")
+            return
+            
+        # 先删除旧版本
+        self.run_adb(f'-s {ip} shell rm -rf /system/app/STBIQ*.apk')
+        # 部署新文件
+        output = self.run_adb(f'-s {ip} push "{file_path}" /system/app/')
+        
+    def _perform_deployment(self, folder):
+        """执行部署操作（原有逻辑）"""
+        ip = self.ip_input.text().strip()
+        if not ip:
+            QMessageBox.warning(self, "警告", "请先连接设备")
+            return
+            
+        # 部署startstbagent.sh
+        sh_path = os.path.join(folder, 'startstbagent.sh')
+        if os.path.exists(sh_path):
+            self.log("部署startstbagent.sh...")
+            output = self.run_adb(f'-s {ip} push "{sh_path}" /system/bin/')
+            self.run_adb(f'-s {ip} shell chmod 755 /system/bin/startstbagent.sh')
+        else:
+            self.log("未找到startstbagent.sh文件", command=True)
 
-            self.log("部署完成")
+        # 部署testagent
+        testagent_path = os.path.join(folder, 'testagent')
+        if os.path.exists(testagent_path):
+            self.log("部署testagent...")
+            output = self.run_adb(f'-s {ip} push "{testagent_path}" /system/bin/')
+            self.run_adb(f'-s {ip} shell chmod 755 /system/bin/testagent')
+        else:
+            self.log("未找到testagent文件", command=True)
+
+        # 处理 STBIQ APK
+        apk_files = [f for f in os.listdir(folder) if f.startswith("STBIQ") and f.endswith(".apk")]
+        if apk_files:
+            apk_path = os.path.join(folder, apk_files[0])
+            self.log("部署STBIQ APK...")
+            self.run_adb(f'-s {ip} shell rm -rf /system/app/STBIQ*.apk')  # 删除旧版本
+            self.run_adb(f'-s {ip} push "{apk_path}" /system/app/')
+        else:
+            self.log("未找到STBIQ APK文件", command=True)
+
+        self.log("整体部署完成")
+        QMessageBox.information(self, "完成", "整体部署完成！")
 
     def reboot_stb(self):
         """重启机顶盒"""
@@ -1156,6 +1270,10 @@ class StorageMonitorDialog(QDialog):
 
 
 class PerformanceAnalysisDialogV2(QDialog):
+    """
+    性能分析，将性能监测的数据分析成单表或多表折线图报表
+    可以单选进程和pid以及通过图例进行筛选选择数据
+    """
     def __init__(self, file_path, parent=None):
         super().__init__(parent)
         self.setWindowTitle("性能分析")

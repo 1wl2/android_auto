@@ -8,8 +8,12 @@ IP地址窗口填写机顶盒的IP，点击“连接”，就可通过adb命令�
 
 ## **部署**
 部署是针对探针和脚本文件push到指定目录下完成的，具体如下：
-  - 点击“部署”按钮，选择`STBIQ.*apk`、`testagent`、`startstbagent.sh`文件所在的文件夹，程序首先检查机顶盒`/system/app/`下是否存在`STBIQ.*apk`的文件，存在就删除，然后将新的apk文件push到`/system/app/`下；
+  - 点击“整体体部署”按钮，选择`STBIQ.*apk`、`testagent`、`startstbagent.sh`文件所在的文件夹，程序首先检查机顶盒`/system/app/`下是否存在`STBIQ.*apk`的文件，存在就删除，然后将新的apk文件push到`/system/app/`下；
   - 其次 `testagent`、`startstbagent.sh`文件会直接push到`/system/bin/`目录下，直接覆盖原文件，自动给`testagent`、`startstbagent.sh`文件赋权可执行权限，部署成功后自动弹窗提示"部署完成"。
+  - 点击"单文件部署"按钮：
+    - 选择需要部署的apk文件，程序会检查机顶盒`/system/app/`下是否存在`STBIQ.*apk`的文件，存在就删除，然后将新的apk文件push到`/system/app/`下，并自动给apk文件赋权可执行权限，部署成功后自动弹窗提示"部署完成"。
+    - 选择testagent文件，点击"单文件部署"按钮，选择testagent文件，程序会检查机顶盒`/system/bin/`下是否存在`testagent`文件，存在就删除，然后将新的文件push到`/system/bin/`下，并自动给文件赋权可执行权限，部署成功后自动弹窗提示"部署完成"。
+    - 选择`startstbagent.sh`文件，点击"单文件部署"按钮，选择`startstbagent.sh`文件，程序会检查机顶盒`/system/bin/`下是否存在`startstbagent.sh`文件，存在就删除，然后将新的文件push到`/system/bin/`下，并自动给文件赋权可执行权限，部署成功后自动弹窗提示"部署完成"。
 
 ## **重启机顶盒**
 adb 通过`reboot`对连接的盒子重启。
