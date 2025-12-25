@@ -1,12 +1,13 @@
-#!/system/bin/sh 
-  
+#!/system/bin/sh
+
 LOGFILE="/sdcard/logfile.csv"
 PID_FILE="/sdcard/performance.pid"  # 新增PID文件路径
+LOGFILE3="/sdcard/Ethernet_port_traffic.csv"
+INTERFACE="eth0"
+VIXTEL_PATH="/data/local/vixtel"
+DISK_MONITORING="/sdcard/disk_monitoring.csv"
+TARGET="stbagent|testagent|com.vixtel.stb.agent"
 
-touch "$LOGFILE"
-
-# 定义多个监控进程（用 | 分隔，支持正则表达式）
-TARGET_PROCESSES="stbagent|testagent|com.vixtel.stb.agent"
 
 # 写入当前进程PID
 echo $$ > "$PID_FILE"
@@ -17,45 +18,93 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# 新CSV表头（含系统指标）
-echo "timestamp,total_cpu(%),user(%),system(%),idle(%),total_mem(kB),used_mem(kB),free_mem(kB),buffers(kB),pid,user,pr,ni,virt,res,shr,s,%cpu,%mem,time+,args" > "$LOGFILE"
+
+echo "timestamp,total_cpu,user(%),system(%),idle(%),total_mem(kB),used_mem(kB),free_mem(kB),buffers(kB),pid,user,pr,ni,virt,res,shr,s,%cpu,%mem,time+,args" > "$LOGFILE"
+
+parse_cpu_line() {
+    echo "$1" | awk '
+    {
+        cpu=0; user=0; sys=0; idle=0;
+        for(i=1;i<=NF;i++){
+            if($i ~ /cpu$/)  {gsub("%cpu","",$i);  cpu=$i}
+            if($i ~ /user$/) {gsub("%user","",$i); user=$i}
+            if($i ~ /sys$/)  {gsub("%sys","",$i);  sys=$i}
+            if($i ~ /idle$/) {gsub("%idle","",$i); idle=$i}
+        }
+        print cpu,user,sys,idle
+    }'
+}
 
 while true; do
-    timestamp=$(date +'%Y-%m-%d %H:%M:%S')
-    top_output=$(top -b -n 1)
-    
-    # ---------- 解析CPU指标 ----------
-    cpu_line=$(echo "$top_output" | grep -m 1 -E "^[0-9]+%cpu")
-    user_cpu=$(echo "$cpu_line" | awk '{print $2}' | tr -d '%user')
-    sys_cpu=$(echo "$cpu_line" | awk '{print $4}' | tr -d '%sys')
-    idle_cpu=$(echo "$cpu_line" | awk '{print $5}' | tr -d '%idle')
-    total_cpu=$(awk "BEGIN {print $user_cpu + $sys_cpu}")
-    
-    # ---------- 解析内存指标 ----------
-    mem_line=$(echo "$top_output" | grep -m 1 "^Mem")
-    total_mem=$(echo "$mem_line" | awk '{print $2}' | tr -d 'k')    # 2025232
-    used_mem=$(echo "$mem_line" | awk '{print $4}' | tr -d 'k')     # 1554496
-    free_mem=$(echo "$mem_line" | awk '{print $6}' | tr -d 'k')     # 470736
-    buffers=$(echo "$mem_line" | awk '{print $8}' | tr -d 'k')      # 57260
-    
-    # ---------- 解析进程数据 ----------
-    echo "$top_output" | grep -Ew "$TARGET_PROCESSES" | \
-    awk -v ts="$timestamp" \
-        -v tc="$total_cpu" \
-        -v uc="$user_cpu" \
-        -v sc="$sys_cpu" \
-        -v ic="$idle_cpu" \
-        -v tm="$total_mem" \
-        -v um="$used_mem" \
-        -v fm="$free_mem" \
-        -v bf="$buffers" '
-    BEGIN {OFS=","}
-    {
-        # 清理进程数据中的%符号
-        gsub(/%/, "", $9)  # %CPU
-        gsub(/%/, "", $10) # %MEM
-        print ts, tc, uc, sc, ic, tm, um, fm, bf, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12
-    }' >> "$LOGFILE"
-    
-    sleep 3
+    ts=$(date '+%Y-%m-%d %H:%M:%S')
+
+    RAW=$(top -n 1 -b 2>/dev/null | sed 's/\[[^]]*\]//g')
+
+    # CPU
+    cpu_line=$(echo "$RAW" | grep -m 1 "%cpu")
+
+    cpu_values=$(parse_cpu_line "$cpu_line")
+    total_cpu=$(echo "$cpu_values" | awk '{print $1}')
+    user_cpu=$(echo "$cpu_values" | awk '{print $2}')
+    sys_cpu=$(echo "$cpu_values" | awk '{print $3}')
+    idle_cpu=$(echo "$cpu_values" | awk '{print $4}')
+
+    # MEM
+    mem_line=$(echo "$RAW" | grep -m 1 "Mem:")
+    total_mem=$(echo $mem_line | awk '{print $2}' | tr -d 'K')
+    used_mem=$(echo $mem_line | awk '{print $4}' | tr -d 'K')
+    free_mem=$(echo $mem_line | awk '{print $6}' | tr -d 'K')
+    buffers=$(echo $mem_line | awk '{print $8}' | tr -d 'K')
+
+    # PROCESS
+    echo "$RAW" | grep -E "$TARGET" | while read line; do
+
+        col_count=$(echo "$line" | awk '{print NF}')
+        if [ "$col_count" -lt 12 ]; then
+            continue
+        fi	
+
+        pid=$(echo "$line" | awk '{print $1}')
+        user=$(echo "$line" | awk '{print $2}')
+        pr=$(echo "$line" | awk '{print $3}')
+        ni=$(echo "$line" | awk '{print $4}')
+        virt=$(echo "$line" | awk '{print $5}')
+        res=$(echo "$line" | awk '{print $6}')
+        shr=$(echo "$line" | awk '{print $7}')
+        s=$(echo "$line" | awk '{print $8}')
+        cpu=$(echo "$line" | awk '{print $9}')
+        mem=$(echo "$line" | awk '{print $10}')
+        timeplus=$(echo "$line" | awk '{print $11}')
+		
+        # 仅保留进程名，不带路径/参数
+		raw_args=$(echo "$line" | awk '{print $12}')
+		args=$(echo "$raw_args" | awk -F'/' '{print $NF}')
+
+        echo "$ts,$total_cpu,$user_cpu,$sys_cpu,$idle_cpu,$total_mem,$used_mem,$free_mem,$buffers,$pid,$user,$pr,$ni,$virt,$res,$shr,$s,$cpu,$mem,$timeplus,$args" >> "$LOGFILE"
+    done
+	
+	# 网口流量
+	RX1=$(cat /proc/net/dev | grep $INTERFACE | awk '{print $2}')
+    TX1=$(cat /proc/net/dev | grep $INTERFACE | awk '{print $10}')
+    sleep 1
+    RX2=$(cat /proc/net/dev | grep $INTERFACE | awk '{print $2}')
+    TX2=$(cat /proc/net/dev | grep $INTERFACE | awk '{print $10}')
+
+    RX_DIFF=$((RX2 - RX1))
+    TX_DIFF=$((TX2 - TX1))
+    RX_KB=$((RX_DIFF / 1024))
+    TX_KB=$((TX_DIFF / 1024))
+
+    echo "$(date "+%Y-%m-%d %H:%M:%S"), RX:, ${RX_KB}, KB/s, TX:, ${TX_KB}, KB/s" >> "$LOGFILE3"
+	
+	
+	
+	# 探针磁盘占用监测
+	dd=$(du -sk $VIXTEL_PATH 2>/dev/null | awk '{print $1 "," $2}')
+	echo "$ts,${dd}" >> $DISK_MONITORING
+	
+    sleep 2
 done
+
+
+# 后台执行： nohup /system/bin/top_Performance.sh > /dev/null 2>&1 &

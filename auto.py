@@ -8,14 +8,23 @@ import traceback
 import subprocess
 import pandas as pd
 import matplotlib.pyplot as plt
+from matplotlib.backends.backend_qt import NavigationToolbar2QT as NavigationToolbar
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
-from matplotlib.backends.backend_qtagg import NavigationToolbar2QT as NavigationToolbar
 from matplotlib.figure import Figure
 from PyQt6.QtCore import Qt, QDateTime, QThread, pyqtSignal
 from PyQt6.QtWidgets import (QVBoxLayout, QFileDialog, QLabel, QDialog, QMessageBox, QTableWidget, QTableWidgetItem,
                              QHeaderView, QCheckBox, QAbstractItemView, QDialogButtonBox, QProgressDialog,
                              QApplication, QPushButton, QWidget, QHBoxLayout, QLineEdit, QTextEdit,
                              QListWidget, QSplitter, QFrame)
+
+# 在文件开头添加类型忽略注释
+# pyright: reportMissingImports=false
+# pyright: reportOptionalMemberAccess=false
+# pyright: reportOptionalIterable=false
+# pyright: reportOptionalOperand=false
+# pyright: reportAttributeAccessIssue=false
+# pyright: reportUndefinedVariable=false
+# pyright: reportPrivateImportUsage=false
 
 # ✅ 防止中文乱码
 import matplotlib
@@ -38,10 +47,10 @@ class LogFileSelector(QDialog):
 
     def __init__(self, parent_widget=None, log_type="log", custom_path=None, specific_files=None):
         super().__init__(parent_widget)
-        self.parent_widget = parent_widget  # 使用新变量名保存父对象
+        self.parent_widget = parent_widget
         self.log_type = log_type
-        self.custom_path = custom_path  # 新增自定义路径
-        self.specific_files = specific_files  # 特定文件列表
+        self.custom_path = custom_path
+        self.specific_files = specific_files
 
         # 动态设置窗口标题
         title = f"选择{log_type}日志文件" if not specific_files else "选择library/agent日志"
@@ -51,18 +60,32 @@ class LogFileSelector(QDialog):
         self.table = QTableWidget()
         self.table.setColumnCount(4)
         self.table.setHorizontalHeaderLabels(["选择", "文件名", "修改时间", "大小"])
-        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        # 添加类型检查
+        header = self.table.horizontalHeader()
+        if header is not None:
+            header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
 
         # 按钮组
         self.btn_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel |
-                                        QDialogButtonBox.StandardButton.Ok)  # 添加标准按钮
-        self.btn_box.button(QDialogButtonBox.StandardButton.Ok).setText("提取选中")
-        self.btn_box.addButton("全选", QDialogButtonBox.ButtonRole.ActionRole).clicked.connect(self.select_all)
-        self.btn_box.addButton("反选", QDialogButtonBox.ButtonRole.ActionRole).clicked.connect(self.invert_selection)
+                                        QDialogButtonBox.StandardButton.Ok)
+        # 添加类型检查
+        ok_button = self.btn_box.button(QDialogButtonBox.StandardButton.Ok)
+        if ok_button is not None:
+            ok_button.setText("提取选中")
+        
+        # 添加标准按钮
+        select_all_btn = self.btn_box.addButton("全选", QDialogButtonBox.ButtonRole.ActionRole)
+        invert_selection_btn = self.btn_box.addButton("反选", QDialogButtonBox.ButtonRole.ActionRole)
+        
+        if select_all_btn is not None:
+            select_all_btn.clicked.connect(self.select_all)
+        if invert_selection_btn is not None:
+            invert_selection_btn.clicked.connect(self.invert_selection)
+            
         # 绑定标准按钮信号
         self.btn_box.accepted.connect(self.extract_selected)
-        self.btn_box.rejected.connect(self.reject)  # 新增关闭逻辑
+        self.btn_box.rejected.connect(self.reject)
         # 布局
         layout = QVBoxLayout()
         layout.addWidget(self.table)
@@ -70,42 +93,65 @@ class LogFileSelector(QDialog):
         self.setLayout(layout)
 
         self.load_file_list()
-        self.base_path = custom_path if custom_path else f"/data/data/com.vixtel.stb.agent/files/{log_type}"  # 新增基础路径属性
+        self.base_path = custom_path if custom_path else f"/data/data/com.vixtel.stb.agent/files/{log_type}"
 
     def load_file_list(self):
         """改进后的文件加载方法,记录文件加载过程"""
-        self.parent_widget.log(f"开始加载{self.log_type}日志列表...")
+        # 添加类型检查
+        if self.parent_widget is not None:
+            self.parent_widget.log(f"开始加载{self.log_type}日志列表...")
 
         if self.specific_files:
             # 特殊处理预定义文件列表
             self.handle_specific_files()
             return
 
-        cmd = (
-            f'shell "su -c \'ls -l /data/data/com.vixtel.stb.agent/files/{self.log_type}\'"'
-            if self.parent_widget.is_root_required()  # 使用新变量名
-            else f'shell ls -l /data/data/com.vixtel.stb.agent/files/{self.log_type}'
-        )
-        output = self.parent_widget.run_adb(
-            f'-s {self.parent_widget.ip_input.text()} {cmd}'
-        )
-        self.parse_file_list(output)
-        self.parent_widget.log(f"找到{self.table.rowCount()}个日志文件")
+        # 添加类型检查
+        if self.parent_widget is not None and hasattr(self.parent_widget, 'ip_input') and self.parent_widget.ip_input is not None:
+            cmd = (
+                f'shell "su -c \'ls -l /data/data/com.vixtel.stb.agent/files/{self.log_type}\'"'
+                if self.parent_widget.is_root_required()
+                else f'shell ls -l /data/data/com.vixtel.stb.agent/files/{self.log_type}'
+            )
+            output = self.parent_widget.run_adb(
+                f'-s {self.parent_widget.ip_input.text()} {cmd}'
+            )
+            self.parse_file_list(output)
+            if self.parent_widget is not None:
+                self.parent_widget.log(f"找到{self.table.rowCount()}个日志文件")
 
     def handle_specific_files(self):
         """处理预定义文件列表"""
         self.table.setRowCount(0)
 
-        ip = self.parent_widget.ip_input.text()
-        device_path = self.custom_path + "/"
-
-        # 一次性查询所有文件
-        file_list = " ".join([f'"{device_path}{f}"' for f in self.specific_files])
+        # 添加类型检查
+        if self.parent_widget is not None and hasattr(self.parent_widget, 'ip_input') and self.parent_widget.ip_input is not None:
+            ip = self.parent_widget.ip_input.text()
+        else:
+            ip = ""
+            
+        # 添加类型检查
+        if self.custom_path is not None:
+            device_path = self.custom_path + "/"
+        else:
+            device_path = "/"
+            
+        # 添加类型检查
+        if self.specific_files is not None:
+            file_list = " ".join([f'"{device_path}{f}"' for f in self.specific_files])
+        else:
+            file_list = ""
+            
         cmd = f'shell ls -l {file_list}'
-        output = self.parent_widget.run_adb(f'-s {ip} {cmd}')
+        
+        # 添加类型检查
+        if self.parent_widget is not None:
+            output = self.parent_widget.run_adb(f'-s {ip} {cmd}')
+        else:
+            output = ""
 
         # 添加调试日志
-        print(f"ADB命令输出：\n{output}")  # 调试用
+        print(f"ADB命令输出：\n{output}")
 
         # 解析完整输出
         self.parse_file_list(output)
@@ -205,44 +251,74 @@ class LogFileSelector(QDialog):
     def get_selected_files(self):
         """获取选中的文件列表"""
         selected = []
+        # 添加类型检查
+        if self.table is None:
+            return selected
+            
         for row in range(self.table.rowCount()):
-            if self.table.cellWidget(row, 0).isChecked():
-                filename = self.table.item(row, 1).text()
-                selected.append(filename)
+            # 添加类型检查
+            widget = self.table.cellWidget(row, 0)
+            if widget is not None and widget.isChecked():
+                item = self.table.item(row, 1)
+                if item is not None:
+                    selected.append(item.text())
         return selected
 
     def select_all(self):
         """全选/取消全选"""
+        # 添加类型检查
+        if self.table is None:
+            return
+            
         current_state = not all(
             self.table.cellWidget(row, 0).isChecked()
             for row in range(self.table.rowCount())
+            if self.table.cellWidget(row, 0) is not None
         )
 
         for row in range(self.table.rowCount()):
-            self.table.cellWidget(row, 0).setChecked(current_state)
+            widget = self.table.cellWidget(row, 0)
+            # 添加类型检查
+            if widget is not None and hasattr(widget, 'setChecked'):
+                widget.setChecked(current_state)
 
     def invert_selection(self):
         """反选"""
+        # 添加类型检查
+        if self.table is None:
+            return
+            
         for row in range(self.table.rowCount()):
             check = self.table.cellWidget(row, 0)
-            check.setChecked(not check.isChecked())
+            # 添加类型检查
+            if check is not None and hasattr(check, 'setChecked') and hasattr(check, 'isChecked'):
+                check.setChecked(not check.isChecked())
 
     def extract_selected(self):
         """增强日志记录的提取方法,记录文件提取详情"""
         files = self.get_selected_files()
+        # 添加类型检查
         if not files:
-            self.parent_widget.log("提取取消：未选择文件")
+            if self.parent_widget is not None:
+                self.parent_widget.log("提取取消：未选择文件")
             QMessageBox.warning(self, "警告", "请先选择要提取的文件")
             return
 
         dest_dir = QFileDialog.getExistingDirectory(self, "选择保存目录")
         if not dest_dir:
-            self.parent_widget.log("提取取消：未选择保存目录")
+            if self.parent_widget is not None:
+                self.parent_widget.log("提取取消：未选择保存目录")
             return
 
-        self.parent_widget.log(f"开始提取{len(files)}个文件到：{dest_dir}")
+        if self.parent_widget is not None:
+            self.parent_widget.log(f"开始提取{len(files)}个文件到：{dest_dir}")
 
-        ip = self.parent_widget.ip_input.text()
+        # 添加类型检查
+        if self.parent_widget is not None and hasattr(self.parent_widget, 'ip_input') and self.parent_widget.ip_input is not None:
+            ip = self.parent_widget.ip_input.text()
+        else:
+            ip = ""
+
         success_count = 0
         failed_files = []
 
@@ -262,7 +338,11 @@ class LogFileSelector(QDialog):
 
             # 执行adb pull命令
             cmd = f'-s {ip} pull "{src_path}" "{dest_dir}"'
-            output = self.parent_widget.run_adb(cmd)
+            # 添加类型检查
+            if self.parent_widget is not None:
+                output = self.parent_widget.run_adb(cmd)
+            else:
+                output = ""
 
             # 验证结果
             if os.path.exists(dest_path) and os.path.getsize(dest_path) > 0:
@@ -342,8 +422,11 @@ class LogExtractDialog(QDialog):
         """提取指定类型日志"""
         dest_dir = QFileDialog.getExistingDirectory(self, "选择保存目录")
         if dest_dir:
-            cmd = f"pull /data/data/com.vixtel.stb.agent/files/{log_type}"
-            output = self.parent().run_adb(f'-s {self.parent().ip_input.text()} {cmd} "{dest_dir}"')
+            # 添加类型检查
+            parent = self.parent()
+            if parent is not None and hasattr(parent, 'ip_input') and parent.ip_input is not None and hasattr(parent, 'run_adb'):
+                cmd = f"pull /data/data/com.vixtel.stb.agent/files/{log_type}"
+                output = parent.run_adb(f'-s {parent.ip_input.text()} {cmd} "{dest_dir}"')
             QMessageBox.information(self, "完成", f"{log_type}日志提取完成！")
 
     def show_library_agent_selector(self):
@@ -353,12 +436,15 @@ class LogExtractDialog(QDialog):
             "stbsocketlibrary.log", "testagent.log",
             "testlibrary.log"
         ]
-        LogFileSelector(
-            parent_widget=self.parent(),
-            log_type="sdcard",  # 使用特殊标识
-            custom_path="/sdcard",  # 明确指定自定义路径
-            specific_files=log_files
-        ).exec()
+        # 添加类型检查
+        parent = self.parent()
+        if parent is not None:
+            LogFileSelector(
+                parent_widget=parent,
+                log_type="sdcard",
+                custom_path="/sdcard",
+                specific_files=log_files
+            ).exec()
 
 
 class STBTool(QWidget):
@@ -438,13 +524,34 @@ class STBTool(QWidget):
 
     def run_adb(self, command):
         """改进的ADB命令执行方法（使用打包的ADB）"""
-        # 获取ADB路径
+        # 获取ADB路径 - 增强的路径处理
         if getattr(sys, 'frozen', False):  # 打包后环境
-            base_dir = sys._MEIPASS
+            if hasattr(sys, '_MEIPASS'):
+                # PyInstaller单文件模式
+                base_dir = sys._MEIPASS
+            else:
+                # PyInstaller目录模式
+                base_dir = os.path.dirname(os.path.abspath(sys.executable))
         else:  # 开发环境
             base_dir = os.path.dirname(os.path.abspath(__file__))
 
-        adb_path = os.path.join(base_dir, "platform-tools", "adb.exe")
+        # 尝试多个可能的路径
+        possible_paths = [
+            os.path.join(base_dir, "platform-tools", "adb.exe"),
+            os.path.join(base_dir, "platform-tools", "adb"),
+            os.path.join(os.path.dirname(base_dir), "platform-tools", "adb.exe"),
+        ]
+
+        adb_path = None
+        for path in possible_paths:
+            if os.path.exists(path):
+                adb_path = path
+                break
+
+        if not adb_path:
+            self.log(f"错误：未找到ADB工具")
+            return "ADB工具未找到"
+
         full_cmd = f'"{adb_path}" {command}'  # 使用绝对路径
         self.log(f"执行命令: {full_cmd}", command=True)
 
@@ -498,6 +605,66 @@ class STBTool(QWidget):
         except Exception as e:
             self.log(f"执行异常: {str(e)}")
             return str(e)
+
+    def get_adb_path(self):
+        """统一获取 adb 路径（供 run_adb / fire_and_forget 共用）"""
+        if getattr(sys, 'frozen', False):  # 打包后环境
+            if hasattr(sys, '_MEIPASS'):
+                base_dir = sys._MEIPASS
+            else:
+                base_dir = os.path.dirname(os.path.abspath(sys.executable))
+        else:
+            base_dir = os.path.dirname(os.path.abspath(__file__))
+
+        possible_paths = [
+            os.path.join(base_dir, "platform-tools", "adb.exe"),
+            os.path.join(base_dir, "platform-tools", "adb"),
+            os.path.join(os.path.dirname(base_dir), "platform-tools", "adb.exe"),
+        ]
+
+        for path in possible_paths:
+            if os.path.exists(path):
+                return path
+
+        self.log("错误：未找到ADB工具")
+        return None
+
+    def run_adb_fire_and_forget(self, command, timeout=2):
+        adb_path = self.get_adb_path()
+        if not adb_path:
+            return
+
+        full_cmd = f'"{adb_path}" {command}'
+        self.log(f"[FIRE] 执行命令: {full_cmd}", command=True)
+
+        try:
+            subprocess.run(
+                full_cmd,
+                shell=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=timeout
+            )
+        except subprocess.TimeoutExpired:
+            # ⚠️ 这是 Android 4 下的【正常行为】
+            self.log("[FIRE] adb 启动命令超时返回（预期行为）")
+
+    def get_android_major_version(self):
+        """
+        获取 Android 主版本号，例如 4 / 9 / 11
+        """
+        output = self.run_adb(
+            f'-s {self.ip_input.text()} shell "getprop ro.build.version.release"'
+        ).strip()
+
+        if not output:
+            return None
+
+        # 例如：4.4.4 / 9 / 11
+        try:
+            return int(output.split('.')[0])
+        except Exception:
+            return None
 
     def connect_stb(self):
         """增强连接日志"""
@@ -708,68 +875,190 @@ class STBTool(QWidget):
         """显示性能监测对话框"""
         PerformanceMonitorDialog(self).exec()
 
-    def get_top_headers(self):
-        """动态解析列头（修复 S 列识别问题）"""
-        # 执行命令获取输出
-        output = self.run_adb(
-            f'-s {self.ip_input.text()} shell "top -b -n 1 | grep -E \'PID|ARGS|COMMAND\' | grep -vE \'grep|sh -c\'"'
-        )
+    # def get_top_headers(self):
+    #     """动态解析列头（修复 S 列识别问题）"""
+    #     # 执行命令获取输出
+    #     output = self.run_adb(
+    #         f'-s {self.ip_input.text()} shell "top -b -n 1 | grep -E \'PID|ARGS|COMMAND\' | grep -vE \'grep|sh -c\'"'
+    #     )
+    #
+    #     # 处理编码问题
+    #     try:
+    #         cleaned_output = output.encode('latin-1').decode('utf-8', errors='ignore')
+    #     except:
+    #         cleaned_output = output
+    #
+    #     # 匹配列头行
+    #     header_line = None
+    #     for line in cleaned_output.split('\n'):
+    #         line = line.strip()
+    #         if re.search(r'\bPID\b.*\bARGS\b', line, re.IGNORECASE):
+    #             header_line = line
+    #             break
+    #
+    #     if not header_line:
+    #         self.log("列头匹配失败")
+    #         return None
+    #
+    #     # 关键修复：分离 S 和 %CPU
+    #     cleaned_header = re.sub(r'(\bS)\[%CPU\]', r'\1 %CPU', header_line)  # S[%CPU] -> S %CPU
+    #     cleaned_header = re.sub(r'\s{2,}', ' ', cleaned_header)
+    #
+    #     # 精准分割列名
+    #     columns = re.findall(r'\b\w+\+?\b|\%?\w+', cleaned_header)
+    #     columns = [col.upper().replace('%', '') for col in columns]
+    #
+    #     # 列名标准化映射
+    #     key_mappings = {
+    #         'PID': ['PID'],
+    #         'USER': ['USER', 'UID'],
+    #         'PR': ['PR', 'PRI'],
+    #         'NI': ['NI', 'NICE'],
+    #         'VIRT': ['VIRT', 'VSZ'],
+    #         'RES': ['RES', 'RSS'],
+    #         'SHR': ['SHR'],
+    #         'S': ['S', 'STAT'],  # 确保匹配 S 列
+    #         'CPU': ['CPU', '%CPU'],  # 映射清洗后的 CPU 列
+    #         'MEM': ['MEM', '%MEM'],
+    #         'TIME+': ['TIME+', 'TIME'],
+    #         'COMMAND': ['ARGS', 'COMMAND']
+    #     }
+    #
+    #     # 构建列映射
+    #     final_headers = {}
+    #     for std_name, variants in key_mappings.items():
+    #         for var in variants:
+    #             if var in columns:
+    #                 final_headers[std_name] = columns.index(var)
+    #                 break
+    #         else:
+    #             self.log(f"缺失关键列: {std_name}")
+    #             return None
+    #
+    #     self.log(f"列头解析结果: {final_headers}")
+    #     return final_headers
 
-        # 处理编码问题
-        try:
-            cleaned_output = output.encode('latin-1').decode('utf-8', errors='ignore')
-        except:
-            cleaned_output = output
+    # def get_top_headers_android11(self):
+    #     """针对Android 11的top命令列头解析"""
+    #     # 执行命令获取输出
+    #     output = self.run_adb(
+    #         f'-s {self.ip_input.text()} shell "top -b -n 1 | head -10"'
+    #     )
+    #
+    #     # 处理编码问题
+    #     try:
+    #         cleaned_output = output.encode('latin-1').decode('utf-8', errors='ignore')
+    #     except:
+    #         cleaned_output = output
+    #
+    #     # 查找包含PID的行
+    #     header_line = None
+    #     for line in cleaned_output.split('\n'):
+    #         line = line.strip()
+    #         # Android 11的top输出格式可能不同，需要更灵活的匹配
+    #         if re.search(r'\bPID\b', line, re.IGNORECASE) and re.search(r'\bCPU\b', line, re.IGNORECASE):
+    #             header_line = line
+    #             break
+    #
+    #     if not header_line:
+    #         self.log("Android 11列头匹配失败")
+    #         return None
+    #
+    #     # 清理并分割列名
+    #     cleaned_header = re.sub(r'\s{2,}', ' ', header_line)
+    #     columns = re.findall(r'\b\w+\+?\b|\%?\w+', cleaned_header)
+    #     columns = [col.upper().replace('%', '').replace('[', '').replace(']', '') for col in columns]
+    #
+    #     # Android 11列名映射
+    #     key_mappings = {
+    #         'PID': ['PID'],
+    #         'USER': ['USER', 'UID'],
+    #         'PR': ['PR', 'PRI'],
+    #         'NI': ['NI', 'NICE'],
+    #         'VIRT': ['VIRT', 'VSZ'],
+    #         'RES': ['RES', 'RSS'],
+    #         'SHR': ['SHR'],
+    #         'S': ['S', 'STAT'],
+    #         'CPU': ['CPU', '%CPU'],
+    #         'MEM': ['MEM', '%MEM'],
+    #         'TIME+': ['TIME+', 'TIME'],
+    #         'ARGS': ['ARGS', 'COMMAND']
+    #     }
+    #
+    #     # 构建列映射
+    #     final_headers = {}
+    #     for std_name, variants in key_mappings.items():
+    #         for var in variants:
+    #             if var in columns:
+    #                 final_headers[std_name] = columns.index(var)
+    #                 break
+    #         else:
+    #             self.log(f"Android 11缺失关键列: {std_name}")
+    #             return None
+    #
+    #     self.log(f"Android 11列头解析结果: {final_headers}")
+    #     return final_headers
 
-        # 匹配列头行
-        header_line = None
-        for line in cleaned_output.split('\n'):
-            line = line.strip()
-            if re.search(r'\bPID\b.*\bARGS\b', line, re.IGNORECASE):
-                header_line = line
-                break
-
-        if not header_line:
-            self.log("列头匹配失败")
-            return None
-
-        # 关键修复：分离 S 和 %CPU
-        cleaned_header = re.sub(r'(\bS)\[%CPU\]', r'\1 %CPU', header_line)  # S[%CPU] -> S %CPU
-        cleaned_header = re.sub(r'\s{2,}', ' ', cleaned_header)
-
-        # 精准分割列名
-        columns = re.findall(r'\b\w+\+?\b|\%?\w+', cleaned_header)
-        columns = [col.upper().replace('%', '') for col in columns]
-
-        # 列名标准化映射
-        key_mappings = {
-            'PID': ['PID'],
-            'USER': ['USER', 'UID'],
-            'PR': ['PR', 'PRI'],
-            'NI': ['NI', 'NICE'],
-            'VIRT': ['VIRT', 'VSZ'],
-            'RES': ['RES', 'RSS'],
-            'SHR': ['SHR'],
-            'S': ['S', 'STAT'],  # 确保匹配 S 列
-            'CPU': ['CPU', '%CPU'],  # 映射清洗后的 CPU 列
-            'MEM': ['MEM', '%MEM'],
-            'TIME+': ['TIME+', 'TIME'],
-            'COMMAND': ['ARGS', 'COMMAND']
-        }
-
-        # 构建列映射
-        final_headers = {}
-        for std_name, variants in key_mappings.items():
-            for var in variants:
-                if var in columns:
-                    final_headers[std_name] = columns.index(var)
-                    break
-            else:
-                self.log(f"缺失关键列: {std_name}")
-                return None
-
-        self.log(f"列头解析结果: {final_headers}")
-        return final_headers
+    # def get_top_headers_android11_from_dialog(self):
+    #     """为PerformanceMonitorDialog提供的Android 11 top命令列头解析"""
+    #     # 执行命令获取输出
+    #     output = self.run_adb(
+    #         f'-s {self.ip_input.text()} shell "top -b -n 1 | head -10"'
+    #     )
+    #
+    #     # 处理编码问题
+    #     try:
+    #         cleaned_output = output.encode('latin-1').decode('utf-8', errors='ignore')
+    #     except:
+    #         cleaned_output = output
+    #
+    #     # 查找包含PID的行
+    #     header_line = None
+    #     for line in cleaned_output.split('\n'):
+    #         line = line.strip()
+    #         # Android 11的top输出格式可能不同，需要更灵活的匹配
+    #         if re.search(r'\bPID\b', line, re.IGNORECASE) and re.search(r'\bCPU\b', line, re.IGNORECASE):
+    #             header_line = line
+    #             break
+    #
+    #     if not header_line:
+    #         self.log("Android 11列头匹配失败")
+    #         return None
+    #
+    #     # 清理并分割列名
+    #     cleaned_header = re.sub(r'\s{2,}', ' ', header_line)
+    #     columns = re.findall(r'\b\w+\+?\b|\%?\w+', cleaned_header)
+    #     columns = [col.upper().replace('%', '').replace('[', '').replace(']', '') for col in columns]
+    #
+    #     # Android 11列名映射
+    #     key_mappings = {
+    #         'PID': ['PID'],
+    #         'USER': ['USER', 'UID'],
+    #         'PR': ['PR', 'PRI'],
+    #         'NI': ['NI', 'NICE'],
+    #         'VIRT': ['VIRT', 'VSZ'],
+    #         'RES': ['RES', 'RSS'],
+    #         'SHR': ['SHR'],
+    #         'S': ['S', 'STAT'],
+    #         'CPU': ['CPU', '%CPU'],
+    #         'MEM': ['MEM', '%MEM'],
+    #         'TIME+': ['TIME+', 'TIME'],
+    #         'ARGS': ['ARGS', 'COMMAND']
+    #     }
+    #
+    #     # 构建列映射
+    #     final_headers = {}
+    #     for std_name, variants in key_mappings.items():
+    #         for var in variants:
+    #             if var in columns:
+    #                 final_headers[std_name] = columns.index(var)
+    #                 break
+    #         else:
+    #             self.log(f"Android 11缺失关键列: {std_name}")
+    #             return None
+    #
+    #     self.log(f"Android 11列头解析结果: {final_headers}")
+    #     return final_headers
 
     def show_storage_monitor(self):
         """显示存储空间监测对话框"""
@@ -930,104 +1219,132 @@ class PerformanceMonitorDialog(QDialog):
         self.btn_extract.clicked.connect(self.extract_logs)
 
     def start_monitoring(self):
-        """启动监控（增加版本校验）"""
-        # 检查设备是否支持新脚本
-        android_version = self.parent.run_adb(
-            f'-s {self.parent.ip_input.text()} shell "getprop ro.build.version.release"'
-        )
-        if float(android_version) < 8.0:
-            QMessageBox.warning(
-                self, "兼容性警告",
-                "Android 8.0以下设备可能不支持新版监控脚本"
-            )
-        # 生成动态脚本
-        headers = self.parent.get_top_headers()
-        if not headers:
-            QMessageBox.warning(self, "错误", "无法获取top命令列信息")
+        """启动性能监测（Android 4 / 9 / 11 自动选择脚本）"""
+
+        ip = self.parent.ip_input.text().strip()
+        if not ip:
+            QMessageBox.warning(self, "错误", "设备 IP 为空")
             return
 
-        # 生成脚本内容
-        script_content = self.generate_script(headers)
-        current_md5 = self.get_remote_md5()
-        new_md5 = hashlib.md5(script_content.encode()).hexdigest()
+        # 1️⃣ 获取 Android 主版本号
+        android_major = self.parent.get_android_major_version()
+        if android_major is None:
+            QMessageBox.warning(self, "错误", "无法获取 Android 系统版本")
+            return
 
-        # 检查并更新脚本
-        if current_md5 != new_md5:
-            self.parent.log("检测到脚本变更，正在更新...")
-            with tempfile.NamedTemporaryFile(delete=False) as tmp:
-                tmp.write(script_content.encode())
-                tmp_path = tmp.name
+        self.parent.log(f"检测到 Android 主版本号: {android_major}")
 
-            self.parent.run_adb(f'-s {self.parent.ip_input.text()} push "{tmp_path}" /system/bin/top_Performance.sh')
-            self.parent.run_adb(f'-s {self.parent.ip_input.text()} shell chmod 755 /system/bin/top_Performance.sh')
-            os.unlink(tmp_path)
+        # 2️⃣ 根据版本选择脚本
+        if android_major < 5:
+            script_name = "top_Performance-android4.sh"
+            start_script = "start_top.sh"
+            local_script = os.path.join(os.path.dirname(__file__), script_name)
+            remote_script = f"/data/local/tmp/{script_name}"
+            remote_start_script = f"/data/local/tmp/{start_script}"
+            self.parent.run_adb(
+                f'-s {ip} push "{local_script}" "{remote_start_script}"'
+            )
+            self.parent.run_adb(
+                f'-s {ip} shell chmod 755 "{remote_start_script}"'
+            )
+        else:
+            script_name = "top_Performance.sh"
+            local_script = os.path.join(os.path.dirname(__file__), script_name)
+            remote_script = f"/data/local/tmp/{script_name}"
 
-        # 启动脚本 使用exec替换当前进程 添加输出重定向
-        output = self.parent.run_adb(
-            f'-s {self.parent.ip_input.text()} shell "nohup /system/bin/top_Performance.sh > /dev/null 2>&1 &"'
+        # local_script = os.path.join(os.path.dirname(__file__), script_name)
+        # remote_script = f"/data/local/tmp/{script_name}"
+        # remote_start_script = f"/data/local/tmp/{start_script}"
+
+        if not os.path.exists(local_script):
+            QMessageBox.critical(self, "错误", f"未找到脚本文件:\n{local_script}")
+            return
+
+        # 3️⃣ 防止重复启动（统一杀旧进程）
+        self.parent.run_adb(
+            f'-s {ip} shell "rm -f /sdcard/performance.pid"'
         )
 
-        # 等待PID文件生成（最多尝试3次，每次间隔1秒）
-        max_retries = 3
-        pid = None
-        for _ in range(max_retries):
-            output = self.parent.run_adb(
-                f'-s {self.parent.ip_input.text()} shell "cat /sdcard/performance.pid 2>/dev/null"'
+        # 4️⃣ push + chmod
+        self.parent.log(f"推送性能监测脚本: {script_name}")
+        self.parent.run_adb(
+            f'-s {ip} push "{local_script}" "{remote_script}"'
+        )
+
+        self.parent.run_adb(
+            f'-s {ip} shell sed -i "s/\\r$//" {remote_script}'
+        )
+        self.parent.run_adb(
+            f'-s {ip} shell chmod 755 "{remote_script}"'
+        )
+
+        # 5️⃣ 后台启动脚本
+        if android_major < 5:
+            self.parent.run_adb_fire_and_forget(
+                f'-s {ip} shell sh -x {remote_script}',
+                timeout=2
             )
-            if output.strip().isdigit():
-                pid = output.strip()
+        else:
+            # self.parent.run_adb(
+            #     f'-s {ip} shell sh -c "nohup sh {remote_script} >/dev/null 2>&1 &"'
+            # )
+            self.parent.run_adb(
+                f'-s {self.parent.ip_input.text()} shell "nohup {remote_script} > /dev/null 2>&1 &"'
+            )
+
+        # 6️⃣ 等待 PID 文件生成
+        pid = None
+        for _ in range(5):
+            pid_out = self.parent.run_adb(
+                f'-s {ip} shell "cat /sdcard/performance.pid 2>/dev/null"'
+            ).strip()
+            if pid_out.isdigit():
+                pid = pid_out
                 break
             time.sleep(1)
 
-        if pid:
-            self.current_pid = pid
-            self.parent.log(f"性能监测已启动，进程PID: {pid}")
-            QMessageBox.information(self, "成功", f"性能监测已启动（PID: {pid}）")
-        else:
-            self.parent.log("启动失败：未找到PID文件或内容无效")
-            QMessageBox.warning(self, "错误", "启动监测失败，请检查设备日志")
+        if not pid:
+            QMessageBox.warning(self, "启动失败", "未检测到性能监测进程")
+            return
+
+        self.current_pid = pid
+        self.parent.log(f"性能监测已启动，PID={pid}")
+        QMessageBox.information(
+            self,
+            "成功",
+            f"性能监测已启动\nAndroid {android_major}\nPID: {pid}"
+        )
 
     def stop_monitoring(self):
-        """改进的停止监测方法，实时读取PID文件并验证"""
-        # 实时读取PID文件内容
-        pid_output = self.parent.run_adb(
-            f'-s {self.parent.ip_input.text()} shell "cat /sdcard/performance.pid 2>/dev/null"'
+        """停止性能监测（统一使用 PID 文件）"""
+
+        ip = self.parent.ip_input.text().strip()
+        if not ip:
+            QMessageBox.warning(self, "错误", "设备 IP 为空")
+            return
+
+        # 1️⃣ 读取 PID
+        pid = self.parent.run_adb(
+            f'-s {ip} shell "cat /sdcard/performance.pid 2>/dev/null"'
         ).strip()
 
-        if not pid_output or not pid_output.isdigit():
-            QMessageBox.warning(self, "警告", "未找到有效的监测进程PID")
+        if not pid.isdigit():
+            QMessageBox.information(self, "提示", "当前没有正在运行的性能监测")
             return
 
-        current_pid = pid_output
-
-        # 使用更通用的方式检查进程是否存在
-        check_output = self.parent.run_adb(
-            f'-s {self.parent.ip_input.text()} shell "ps -A| grep -w {current_pid} | grep -v grep"'
-        )
-
-        if not check_output.strip():
-            QMessageBox.information(self, "提示", f"进程 {current_pid} 已终止")
-            return
-
-        # 终止进程
-        output = self.parent.run_adb(
-            f'-s {self.parent.ip_input.text()} shell "kill -9 {current_pid}"'
-        )
-
-        # 删除PID文件
+        # 2️⃣ kill 进程
         self.parent.run_adb(
-            f'-s {self.parent.ip_input.text()} shell "rm /sdcard/performance.pid"'
+            f'-s {ip} shell "kill -9 {pid} 2>/dev/null"'
         )
 
-        # 验证是否终止
-        check_output = self.parent.run_adb(
-            f'-s {self.parent.ip_input.text()} shell "ps | grep -w {current_pid} | grep -v grep"'
+        # 3️⃣ 清理 PID 文件（兜底）
+        self.parent.run_adb(
+            f'-s {ip} shell "rm -f /sdcard/performance.pid"'
         )
 
-        if not check_output.strip():
-            QMessageBox.information(self, "成功", f"已停止监测进程(PID: {current_pid})")
-        else:
-            QMessageBox.warning(self, "错误", "终止进程失败")
+        self.current_pid = None
+        self.parent.log(f"性能监测已停止，PID={pid}")
+        QMessageBox.information(self, "成功", "性能监测已停止")
 
     def extract_logs(self):
         """提取监测文件（兼容新旧版本日志格式）"""
@@ -1054,9 +1371,9 @@ class PerformanceMonitorDialog(QDialog):
         else:
             QMessageBox.warning(self, "错误", "未找到日志文件")
 
-    def generate_script(self, headers):
+    def generate_script(self, headers, android_version=None):
         """生成动态脚本（确保系统指标解析正确）"""
-        # 读取模板文件（注意编码处理）
+        # 直接读取模板文件内容并返回，不进行动态替换
         try:
             with open('top_Performance.sh', 'r', encoding='utf-8') as f:
                 script = f.read()
@@ -1064,24 +1381,44 @@ class PerformanceMonitorDialog(QDialog):
             with open('top_Performance.sh', 'r', encoding='gbk') as f:
                 script = f.read()
 
-        # 替换系统指标解析逻辑
-        cpu_parser = '''
-        # 解析 CPU 使用率
-        cpu_line=$(echo "$top_output" | grep -m 1 "%Cpu(s)")
-        user_cpu=$(echo "$cpu_line" | awk '{print $2}' | tr -d '%%us,')
-        sys_cpu=$(echo "$cpu_line" | awk '{print $4}' | tr -d '%%sy,')
-        idle_cpu=$(echo "$cpu_line" | awk '{print $8}' | tr -d '%%id,')
-        total_cpu=$(echo "scale=1; $user_cpu + $sys_cpu" | bc)
-        '''
+        if android_version and android_version.startswith('11'):
+            cpu_parser = '''
+            # 解析 CPU 使用率
+            cpu_line=$(echo "$top_output" | grep -m 1 "%Cpu(s)")
+            user_cpu=$(echo "$cpu_line" | awk '{print $2}' | tr -d '%%us,')
+            sys_cpu=$(echo "$cpu_line" | awk '{print $4}' | tr -d '%%sy,')
+            idle_cpu=$(echo "$cpu_line" | awk '{print $8}' | tr -d '%%id,')
+            total_cpu=$(echo "scale=1; $user_cpu + $sys_cpu" | bc)
+            '''
 
-        mem_parser = '''
-        # 解析内存信息
-        mem_line=$(echo "$top_output" | grep -m 1 "^Mem")
-        total_mem=$(echo "$mem_line" | awk '{print $4}' | tr -d 'k')
-        used_mem=$(echo "$mem_line" | awk '{print $8}' | tr -d 'k')
-        free_mem=$(echo "$mem_line" | awk '{print $10}' | tr -d 'k')
-        buffers=$(echo "$mem_line" | awk '{print $12}' | tr -d 'k')
-        '''
+            mem_parser = '''
+            # 解析内存信息
+            mem_line=$(echo "$top_output" | grep -m 1 "^Mem")
+            total_mem=$(echo "$mem_line" | awk '{print $4}' | tr -d 'k')
+            used_mem=$(echo "$mem_line" | awk '{print $8}' | tr -d 'k')
+            free_mem=$(echo "$mem_line" | awk '{print $10}' | tr -d 'k')
+            buffers="0"
+            fi
+            '''
+        else:
+            # 原有的解析逻辑
+            cpu_parser = '''
+            # 解析 CPU 使用率
+            cpu_line=$(echo "$top_output" | grep -m 1 "%Cpu(s)")
+            user_cpu=$(echo "$cpu_line" | awk '{print $2}' | tr -d '%%us,')
+            sys_cpu=$(echo "$cpu_line" | awk '{print $4}' | tr -d '%%sy,')
+            idle_cpu=$(echo "$cpu_line" | awk '{print $8}' | tr -d '%%id,')
+            total_cpu=$(echo "scale=1; $user_cpu + $sys_cpu" | bc)
+            '''
+
+            mem_parser = '''
+            # 解析内存信息
+            mem_line=$(echo "$top_output" | grep -m 1 "^Mem")
+            total_mem=$(echo "$mem_line" | awk '{print $4}' | tr -d 'k')
+            used_mem=$(echo "$mem_line" | awk '{print $8}' | tr -d 'k')
+            free_mem=$(echo "$mem_line" | awk '{print $10}' | tr -d 'k')
+            buffers=$(echo "$mem_line" | awk '{print $12}' | tr -d 'k')
+            '''
 
         script = script.replace('# ========== 解析系统级指标 ==========', cpu_parser + mem_parser)
 
@@ -1090,7 +1427,7 @@ class PerformanceMonitorDialog(QDialog):
     def get_remote_md5(self):
         """获取设备端文件的MD5"""
         output = self.parent.run_adb(
-            f'-s {self.parent.ip_input.text()} shell "md5sum /system/bin/top_Performance.sh 2>/dev/null"')
+            f'-s {self.parent.ip_input.text()} shell "md5sum /data/local/tmp/top_Performance.sh 2>/dev/null"')
         return output.split()[0] if output else ""
 
 
@@ -1456,42 +1793,57 @@ class PerformanceAnalysisDialogV2(QDialog):
         self.update_plot()
 
     def update_plot(self):
-        """更新图表（修复布尔判断问题）"""
-        # 在开头添加以下代码
-        # 重置可见性状态
-        self.visible_pids = set()
-        for i in range(self.process_list.count()):
-            if self.process_list.item(i).isSelected():
-                name = self.process_list.item(i).text()
-                if name in self.args_to_pids:
-                    self.visible_pids.update(self.args_to_pids[name])
-
-        # 检查数据是否加载 - 使用正确的方式
+        """更新图表"""
+        # 检查数据是否加载
         if self.data is None or self.data.empty:
+            # 如果没有数据，显示空图表
+            self.figure.clear()
+            ax = self.figure.add_subplot(111)
+            ax.text(0.5, 0.5, '没有数据可显示\n请先加载性能监测数据',
+                    horizontalalignment='center', verticalalignment='center',
+                    transform=ax.transAxes, fontsize=12, color='gray')
+            self.canvas.draw()
             return
 
         # 获取选中的进程名
         selected_names = set()
         for i in range(self.process_list.count()):
-            if self.process_list.item(i).isSelected():
-                selected_names.add(self.process_list.item(i).text())
+            item = self.process_list.item(i)
+            if item.isSelected():
+                selected_names.add(item.text())
 
-        # 找出所有选中的进程名对应的process_id
+        # 找出所有选中的进程名对应的PID
         selected_pids = set()
         for name in selected_names:
             if name in self.args_to_pids:
                 selected_pids.update(self.args_to_pids[name])
 
-        # 更新可见PID集合
-        self.visible_pids = selected_pids.copy()
+        # 如果没有选中的PID，显示空图表
+        if not selected_pids:
+            self.figure.clear()
+            ax = self.figure.add_subplot(111)
+            ax.text(0.5, 0.5, '没有选中的进程\n请在左侧列表中选中进程',
+                    horizontalalignment='center', verticalalignment='center',
+                    transform=ax.transAxes, fontsize=12, color='gray')
+            self.canvas.draw()
+            return
+
+        # 更新可见PID集合 - 保留原有的可见性状态
+        # 如果之前没有定义visible_pids，或者visible_pids为空，则使用所有选中的PID
+        if not hasattr(self, 'visible_pids') or not self.visible_pids:
+            self.visible_pids = selected_pids.copy()
+        else:
+            # 只保留当前选中且之前可见的PID
+            self.visible_pids = {pid for pid in self.visible_pids if pid in selected_pids}
+            # 添加新选中的PID（默认为可见）
+            new_pids = selected_pids - self.visible_pids
+            if new_pids:
+                self.visible_pids.update(new_pids)
 
         # 清除图表
         self.figure.clear()
 
-        if not selected_pids:
-            self.canvas.draw()
-            return
-
+        # 根据模式创建图表
         if self.is_multi_plot:
             # 多图模式
             self.create_multi_plot(selected_pids)
@@ -1502,150 +1854,285 @@ class PerformanceAnalysisDialogV2(QDialog):
         # 添加图例交互
         self.add_legend_interaction()
 
+        # 调整布局
+        try:
+            self.figure.tight_layout(pad=2.0, h_pad=1.5, w_pad=1.5)
+        except Exception:
+            self.figure.set_constrained_layout(True)
+
+        self.canvas.draw()
+
+    def create_multi_plot(self, selected_pids):
+        """创建多图模式图表"""
+        # 清除图表
+        self.figure.clear()
+
+        # 如果没有选中的PID，返回
+        if not selected_pids:
+            self.canvas.draw()
+            return
+
+        # 重新初始化line_map
+        self.line_map = {}
+
+        # 创建三个子图
+        ax1 = self.figure.add_subplot(311)
+        ax2 = self.figure.add_subplot(312)
+        ax3 = self.figure.add_subplot(313)
+
+        # 设置标题
+        ax1.set_title('内存占用 (MB)', loc='left')
+        ax2.set_title('CPU 使用率 (%)', loc='left')
+        ax3.set_title('内存使用率 (%)', loc='left')
+
+        # 存储线条句柄和标签
+        handles1, labels1 = [], []
+        handles2, labels2 = [], []
+        handles3, labels3 = [], []
+
+        # 为每个选中的PID创建曲线
+        for pid in selected_pids:
+            # 获取该PID的数据
+            if pid not in self.process_data:
+                continue
+
+            df = self.process_data[pid]
+
+            # 确定该PID是否应该可见
+            alpha = 1.0 if pid in self.visible_pids else 0.3
+            visible = pid in self.visible_pids
+
+            # 初始化该PID的线条列表
+            self.line_map[pid] = []
+
+            # 第一张图：内存占用
+            l1, = ax1.plot(df['timestamp'], df['res'],
+                           label=pid,
+                           color=self.color_map.get(f"{pid}_res", 'tab:red'),
+                           alpha=alpha,
+                           visible=visible)
+            handles1.append(l1)
+            labels1.append(pid)
+            self.line_map[pid].append(l1)
+
+            # 第二张图：CPU使用率
+            l2, = ax2.plot(df['timestamp'], df['%cpu'],
+                           label=pid,
+                           color=self.color_map.get(f"{pid}_%cpu", 'tab:blue'),
+                           alpha=alpha,
+                           visible=visible)
+            handles2.append(l2)
+            labels2.append(pid)
+            self.line_map[pid].append(l2)
+
+            # 第三张图：内存使用率
+            l3, = ax3.plot(df['timestamp'], df['%mem'],
+                           label=pid,
+                           color=self.color_map.get(f"{pid}_%mem", 'tab:green'),
+                           alpha=alpha,
+                           visible=visible)
+            handles3.append(l3)
+            labels3.append(pid)
+            self.line_map[pid].append(l3)
+
+        # 设置网格和标签旋转
+        for ax in [ax1, ax2, ax3]:
+            ax.grid(True)
+            ax.tick_params(axis='x', rotation=45)
+
+        # 如果没有线条，显示空图表
+        if not handles1:
+            ax1.text(0.5, 0.5, '没有可显示的数据',
+                     horizontalalignment='center', verticalalignment='center',
+                     transform=ax1.transAxes, fontsize=12, color='gray')
+            ax2.text(0.5, 0.5, '没有可显示的数据',
+                     horizontalalignment='center', verticalalignment='center',
+                     transform=ax2.transAxes, fontsize=12, color='gray')
+            ax3.text(0.5, 0.5, '没有可显示的数据',
+                     horizontalalignment='center', verticalalignment='center',
+                     transform=ax3.transAxes, fontsize=12, color='gray')
+            self.canvas.draw()
+            return
+
+        # 创建图例 - 修复：将图例放在图表外部右侧
+        # 确保有足够的空间显示图例
+        self.figure.subplots_adjust(right=0.75)  # 为图例留出25%的空间
+
+        # 为每个子图创建图例
+        leg1 = ax1.legend(handles1, labels1,
+                          loc='upper left',
+                          bbox_to_anchor=(1.02, 1),
+                          borderaxespad=0,
+                          fontsize=8,
+                          frameon=True,
+                          framealpha=0.9,
+                          facecolor='white',
+                          edgecolor='black')
+
+        leg2 = ax2.legend(handles2, labels2,
+                          loc='upper left',
+                          bbox_to_anchor=(1.02, 1),
+                          borderaxespad=0,
+                          fontsize=8,
+                          frameon=True,
+                          framealpha=0.9,
+                          facecolor='white',
+                          edgecolor='black')
+
+        leg3 = ax3.legend(handles3, labels3,
+                          loc='upper left',
+                          bbox_to_anchor=(1.02, 1),
+                          borderaxespad=0,
+                          fontsize=8,
+                          frameon=True,
+                          framealpha=0.9,
+                          facecolor='white',
+                          edgecolor='black')
+
+        # 设置图例可交互
+        for leg, labels in zip([leg1, leg2, leg3], [labels1, labels2, labels3]):
+            for i, text in enumerate(leg.get_texts()):
+                pid = labels[i]
+                # 设置gid以便拾取事件使用
+                text.set_gid(pid)
+
+                # 根据可见性设置初始样式
+                if pid in self.visible_pids:
+                    text.set_alpha(1.0)
+                    text.set_fontstyle("normal")
+                else:
+                    text.set_alpha(0.3)
+                    text.set_fontstyle("italic")
+
+                # 启用拾取
+                text.set_picker(True)
+
+        self.current_legends = [leg1, leg2, leg3]
+
+        # 添加图例交互
+        self.add_legend_interaction()
+
+        # 调整布局
         try:
             self.figure.tight_layout(pad=2.0, h_pad=1.5, w_pad=1.5)
         except Exception:
             # 如果tight_layout失败，使用constrained_layout
             self.figure.set_constrained_layout(True)
+
         self.canvas.draw()
 
-    def create_multi_plot(self, selected_pids):
-        ax1 = self.figure.add_subplot(311)
-        ax2 = self.figure.add_subplot(312)
-        ax3 = self.figure.add_subplot(313)
 
-        ax1.set_title('内存占用 (MB)', loc='left')
-        ax2.set_title('CPU 使用率 (%)', loc='left')
-        ax3.set_title('内存使用率 (%)', loc='left')
 
-        handles1, labels1 = [], []
-        handles2, labels2 = [], []
-        handles3, labels3 = [], []
-
-        self.line_map = {}  # 用于图例交互控制
-
-        for pid in selected_pids:
-            df = self.process_data[pid]
-            alpha = 1.0 if pid in self.visible_pids else 0.3
-
-            l1, = ax1.plot(df['timestamp'], df['res'], label=pid,
-                           color=self.color_map.get(f"{pid}_res", 'tab:red'),
-                           alpha=alpha, visible=(pid in self.visible_pids))
-            handles1.append(l1)
-            labels1.append(pid)
-            self.line_map.setdefault(pid, []).append(l1)
-
-            l2, = ax2.plot(df['timestamp'], df['%cpu'], label=pid,
-                           color=self.color_map.get(f"{pid}_%cpu", 'tab:blue'),
-                           alpha=alpha, visible=(pid in self.visible_pids))
-            handles2.append(l2)
-            labels2.append(pid)
-            self.line_map.setdefault(pid, []).append(l2)
-
-            l3, = ax3.plot(df['timestamp'], df['%mem'], label=pid,
-                           color=self.color_map.get(f"{pid}_%mem", 'tab:green'),
-                           alpha=alpha, visible=(pid in self.visible_pids))
-            handles3.append(l3)
-            labels3.append(pid)
-            self.line_map.setdefault(pid, []).append(l3)
-
-        for ax in [ax1, ax2, ax3]:
-            ax.grid(True)
-            ax.tick_params(axis='x', rotation=45)
-
-        # 图例放右外侧
-        leg1 = ax1.legend(handles1, labels1, loc='upper left', bbox_to_anchor=(1.01, 1))
-        leg2 = ax2.legend(handles2, labels2, loc='upper left', bbox_to_anchor=(1.01, 1))
-        leg3 = ax3.legend(handles3, labels3, loc='upper left', bbox_to_anchor=(1.01, 1))
-
-        # 设置图例项可点击
-        for leg, label_set in zip([leg1, leg2, leg3], [labels1, labels2, labels3]):
-            for i, text in enumerate(leg.get_texts()):
-                pid = label_set[i]
-                # 存储pid到图例文本中
-                text.set_gid(pid)
-                if pid not in self.visible_pids:
-                    text.set_alpha(0.3)
-                    text.set_fontstyle("italic")
-
-        self.current_legends = [leg1, leg2, leg3]
-
-        # 添加图例交互
-        self.create_legend_interaction(leg1)
-        self.create_legend_interaction(leg2)
-        self.create_legend_interaction(leg3)
 
     def create_single_plot(self, selected_pids):
-        # 初始化line_map（如果之前没有初始化）
+        """创建单图模式图表"""
+        # 清除图表
+        self.figure.clear()
+
+        # 如果没有选中的PID，返回
+        if not selected_pids:
+            self.canvas.draw()
+            return
+
+        # 重新初始化line_map
         self.line_map = {}
 
+        # 创建子图
         ax = self.figure.add_subplot(111)
         ax.set_title('性能指标趋势', loc='left')
         ax.grid(True)
         ax.tick_params(axis='x', rotation=45)
 
+        # 创建辅助Y轴
         ax2 = ax.twinx()
         ax3 = ax.twinx()
         ax3.spines['right'].set_position(('outward', 60))
 
-        handles = []
-        labels = []
-        added_pids = set()
-        
         # 获取指标筛选状态
         self.show_res = self.res_checkbox.isChecked()
         self.show_cpu = self.cpu_checkbox.isChecked()
         self.show_mem = self.mem_checkbox.isChecked()
 
+        # 存储线条句柄和标签
+        handles = []
+        labels = []
+
+        # 为每个选中的PID创建曲线
         for pid in selected_pids:
+            # 获取该PID的数据
+            if pid not in self.process_data:
+                continue
+
             df = self.process_data[pid]
+
+            # 确定该PID是否应该可见
             alpha = 1.0 if pid in self.visible_pids else 0.3
 
-            # 内存占用
+            # 初始化该PID的线条列表
+            self.line_map[pid] = []
+
+            # 内存占用曲线
             if self.show_res:
                 l1, = ax.plot(df['timestamp'], df['res'],
-                              label=f"{pid} (内存)", color=self.color_map[f"{pid}_res"],
-                              linestyle='-', alpha=alpha, visible=(pid in self.visible_pids))
+                              label=f"{pid} (内存)",
+                              color=self.color_map.get(f"{pid}_res", 'tab:red'),
+                              linestyle='-',
+                              alpha=alpha,
+                              visible=(pid in self.visible_pids))
                 handles.append(l1)
                 labels.append(f"{pid} (内存)")
-                # 将这条线添加到line_map中
-                self.line_map.setdefault(pid, []).append(l1)
+                self.line_map[pid].append(l1)
 
-            # CPU 使用率
+            # CPU使用率曲线
             if self.show_cpu:
                 l2, = ax3.plot(df['timestamp'], df['%cpu'],
-                               label=f"{pid} (CPU)", color=self.color_map[f"{pid}_%cpu"],
-                               linestyle='--', alpha=alpha, visible=(pid in self.visible_pids))
+                               label=f"{pid} (CPU)",
+                               color=self.color_map.get(f"{pid}_%cpu", 'tab:blue'),
+                               linestyle='--',
+                               alpha=alpha,
+                               visible=(pid in self.visible_pids))
                 handles.append(l2)
                 labels.append(f"{pid} (CPU)")
-                # 将这条线添加到line_map中
-                self.line_map.setdefault(pid, []).append(l2)
+                self.line_map[pid].append(l2)
 
-            # 内存使用率
+            # 内存使用率曲线
             if self.show_mem:
                 l3, = ax2.plot(df['timestamp'], df['%mem'],
-                               label=f"{pid} (内存%)", color=self.color_map[f"{pid}_%mem"],
-                               linestyle=':', alpha=alpha, visible=(pid in self.visible_pids))
+                               label=f"{pid} (内存%)",
+                               color=self.color_map.get(f"{pid}_%mem", 'tab:green'),
+                               linestyle=':',
+                               alpha=alpha,
+                               visible=(pid in self.visible_pids))
                 handles.append(l3)
                 labels.append(f"{pid} (内存%)")
-                # 将这条线添加到line_map中
-                self.line_map.setdefault(pid, []).append(l3)
+                self.line_map[pid].append(l3)
 
-        ax.set_ylabel('内存占用 (MB)')
+        # 设置Y轴标签
+        ax.set_ylabel('内存占用 (MB)', color='tab:red')
+        ax.tick_params(axis='y', labelcolor='tab:red')
 
+        # 根据筛选状态显示/隐藏辅助Y轴
         if self.show_mem:
-            ax2.set_ylabel('内存使用率 (%)', color='tab:blue')
-            ax2.tick_params(axis='y', labelcolor='tab:blue')
+            ax2.set_ylabel('内存使用率 (%)', color='tab:green')
+            ax2.tick_params(axis='y', labelcolor='tab:green')
         else:
             ax2.set_visible(False)
 
         if self.show_cpu:
-            ax3.set_ylabel('CPU 使用率 (%)', color='tab:green')
-            ax3.tick_params(axis='y', labelcolor='tab:green')
+            ax3.set_ylabel('CPU 使用率 (%)', color='tab:blue')
+            ax3.tick_params(axis='y', labelcolor='tab:blue')
         else:
             ax3.set_visible(False)
 
-        # 合并图例，添加交互
+        # 如果没有任何线条，显示空图表
+        if not handles:
+            ax.text(0.5, 0.5, '没有可显示的数据\n请选择要显示的指标',
+                    horizontalalignment='center', verticalalignment='center',
+                    transform=ax.transAxes, fontsize=12, color='gray')
+            self.canvas.draw()
+            return
+
+        # 创建图例
         leg = ax.legend(handles, labels,
                         loc='upper left',
                         bbox_to_anchor=(1.01, 1),
@@ -1655,105 +2142,164 @@ class PerformanceAnalysisDialogV2(QDialog):
                         facecolor='white',
                         edgecolor='black',
                         labelspacing=0.3,
-                        handlelength=2,
-                        handler_map={})
+                        handlelength=2)
 
         # 设置图例可交互
-        for text in leg.get_texts():
-            # 提取pid并存储
+        for i, text in enumerate(leg.get_texts()):
+            # 从标签文本提取PID
             label_text = text.get_text()
             if ' (' in label_text:
                 pid = label_text.split(' (')[0]
             else:
                 pid = label_text
-            text.set_gid(pid)  # 存储pid信息
 
-            # 设置初始样式
+            # 设置gid以便拾取事件使用
+            text.set_gid(pid)
+
+            # 根据可见性设置初始样式
             if pid in self.visible_pids:
                 text.set_alpha(1.0)
                 text.set_fontstyle("normal")
             else:
                 text.set_alpha(0.3)
                 text.set_fontstyle("italic")
-            text.set_picker(True)  # 启用拾取功能
+
+            # 启用拾取
+            text.set_picker(True)
 
         self.current_legend = leg
 
         # 添加图例交互
-        self.create_legend_interaction(leg)
+        self.add_legend_interaction()
 
-    def add_legend_interaction(self):
-        if hasattr(self, 'legend_pick_event'):
-            self.canvas.mpl_disconnect(self.legend_pick_event)
-        self.legend_pick_event = self.canvas.mpl_connect('pick_event', self.on_legend_click)
+        # 调整布局
+        try:
+            self.figure.tight_layout(pad=2.0, h_pad=1.5, w_pad=1.5)
+        except Exception:
+            self.figure.set_constrained_layout(True)
 
-    def on_legend_click(self, event):
-        """处理图例点击事件 - 切换整个pid的可见性"""
-        artist = event.artist
-        # 获取存储的pid信息
-        pid = artist.get_gid()
-        if not pid:
-            return
-
-        # 切换该pid的可见状态
-        if pid in self.visible_pids:
-            self.visible_pids.remove(pid)
-        else:
-            self.visible_pids.add(pid)
-
-        # 更新该pid对应的所有线条
-        if pid in self.line_map:
-            for line in self.line_map[pid]:
-                line.set_visible(pid in self.visible_pids)
-
-        # 更新所有图例项的样式
-        self.update_legend_style()
-
-        # 重绘图表
         self.canvas.draw()
 
-    def create_legend_interaction(self, leg):
-        """创建图例交互功能，支持点击图例控制整个pid的可见性"""
-        # 为图例中的每个文本项添加点击事件
-        for text in leg.get_texts():
-            text.set_picker(True)  # 启用拾取功能
-            # 提取并存储pid信息（处理带括号的情况）
-            label_text = text.get_text()
+        # 确保线条的初始可见性正确（在 create_single_plot 和 create_multi_plot 的末尾添加）
+        if hasattr(self, 'line_map'):
+            for pid in selected_pids:
+                if pid in self.line_map:
+                    lines = self.line_map[pid]
+                    visible = pid in self.visible_pids
+                    for line in lines:
+                        line.set_visible(visible)
+                        line.set_alpha(1.0 if visible else 0.3)
+
+    def add_legend_interaction(self):
+        """添加图例交互功能"""
+        # 确保已经连接到图例点击事件
+        if hasattr(self, 'legend_pick_event'):
+            self.canvas.mpl_disconnect(self.legend_pick_event)
+
+        # 为所有图例项启用点击
+        def setup_legend_interaction(legend):
+            if legend is None:
+                return
+
+            # 为每个图例文本设置可点击
+            for text in legend.get_texts():
+                text.set_picker(True)
+                # 确保设置了 gid
+                if not text.get_gid():
+                    # 尝试从文本中提取 pid
+                    label_text = text.get_text()
+                    if ' (' in label_text:
+                        pid = label_text.split(' (')[0]
+                    else:
+                        pid = label_text
+                    text.set_gid(pid)
+
+        # 设置多图模式或单图模式的图例交互
+        if self.is_multi_plot:
+            for leg in getattr(self, 'current_legends', []):
+                setup_legend_interaction(leg)
+        else:
+            setup_legend_interaction(getattr(self, 'current_legend', None))
+
+        # 连接点击事件
+        self.legend_pick_event = self.canvas.mpl_connect(
+            'pick_event', self.on_legend_click
+        )
+
+    def create_legend_interaction(self, legend):
+        """
+        绑定图例点击交互
+        """
+        if legend is None:
+            return
+
+        # 为图例每个句柄建立映射
+        for legend_item in legend.legend_handles:
+
+            # 启动 picker，不然 pick_event 不会触发
+            legend_item.set_picker(True)
+
+            # 找到原始折线对象
+            if hasattr(legend_item, "_legmarker_orig_handle"):
+                legend_item.orig_line = legend_item._legmarker_orig_handle
+            elif hasattr(legend_item, "_orig_handle"):
+                legend_item.orig_line = legend_item._orig_handle
+            else:
+                # 如果无法找到原始曲线，说明 legend 生成方式不对
+                continue
+
+        # 只绑定一次 pick_event
+        if not hasattr(self, "legend_pick_event"):
+            self.legend_pick_event = self.canvas.mpl_connect(
+                'pick_event', self.on_legend_click
+            )
+
+    def on_legend_click(self, event):
+        """
+        点击图例切换对应曲线的显示状态
+        """
+        # 获取被点击的图例文本
+        legend_text = event.artist
+
+        # 从文本的 gid 获取 pid（如果设置了 gid）
+        pid = legend_text.get_gid()
+
+        # 如果 gid 没有设置，尝试从文本内容中提取 pid
+        if not pid:
+            label_text = legend_text.get_text()
+            # 尝试从标签文本提取PID
             if ' (' in label_text:
                 pid = label_text.split(' (')[0]
             else:
                 pid = label_text
-            text.set_gid(pid)  # 使用set_gid存储pid信息
 
-        # 连接点击事件
-        if hasattr(self, 'legend_pick_event'):
-            self.canvas.mpl_disconnect(self.legend_pick_event)
-        self.legend_pick_event = self.canvas.mpl_connect('pick_event', self.on_legend_click)
-
-    def on_legend_click(self, event):
-        """处理图例点击事件 - 切换整个pid的可见性"""
-        artist = event.artist
-        # 获取存储的pid信息
-        pid = artist.get_gid()
         if not pid:
             return
 
-        # 切换该pid的可见状态
+        # 切换该 pid 在 visible_pids 中的状态
         if pid in self.visible_pids:
             self.visible_pids.remove(pid)
+            new_visible = False
         else:
             self.visible_pids.add(pid)
+            new_visible = True
 
-        # 更新该pid对应的所有线条
-        if pid in self.line_map:
-            for line in self.line_map[pid]:
-                line.set_visible(pid in self.visible_pids)
+        # 切换该 pid 对应的所有曲线的可见性
+        if hasattr(self, 'line_map') and pid in self.line_map:
+            lines = self.line_map[pid]
+            for line in lines:
+                line.set_visible(new_visible)
+                line.set_alpha(1.0 if new_visible else 0.3)
 
-        # 更新所有图例项的样式
-        self.update_legend_style()
+        # 更新图例文本样式
+        if new_visible:
+            legend_text.set_alpha(1.0)
+            legend_text.set_fontstyle("normal")
+        else:
+            legend_text.set_alpha(0.3)
+            legend_text.set_fontstyle("italic")
 
-        # 重绘图表
-        self.canvas.draw()
+        self.canvas.draw_idle()
 
     def update_legend_style(self):
         """更新所有图例项的样式（隐藏时置灰）"""
@@ -1909,3 +2455,6 @@ if __name__ == "__main__":
     window = STBTool()
     window.show()
     sys.exit(app.exec())
+
+
+
