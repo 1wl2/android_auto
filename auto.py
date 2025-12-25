@@ -1236,27 +1236,18 @@ class PerformanceMonitorDialog(QDialog):
 
         # 2️⃣ 根据版本选择脚本
         if android_major < 5:
+
             script_name = "top_Performance-android4.sh"
-            start_script = "start_top.sh"
-            local_script = os.path.join(os.path.dirname(__file__), script_name)
-            remote_script = f"/data/local/tmp/{script_name}"
-            remote_start_script = f"/data/local/tmp/{start_script}"
-            self.parent.run_adb(
-                f'-s {ip} push "{local_script}" "{remote_start_script}"'
-            )
-            self.parent.run_adb(
-                f'-s {ip} shell chmod 755 "{remote_start_script}"'
-            )
+
         else:
             script_name = "top_Performance.sh"
-            local_script = os.path.join(os.path.dirname(__file__), script_name)
-            remote_script = f"/data/local/tmp/{script_name}"
 
-        # local_script = os.path.join(os.path.dirname(__file__), script_name)
-        # remote_script = f"/data/local/tmp/{script_name}"
-        # remote_start_script = f"/data/local/tmp/{start_script}"
+
+        local_script = os.path.join(os.path.dirname(__file__), script_name)
+        remote_script = f"/data/local/tmp/{script_name}"
 
         if not os.path.exists(local_script):
+            QMessageBox.critical(self, "错误", f"未找到脚本文件:\n{local_script}")
             QMessageBox.critical(self, "错误", f"未找到脚本文件:\n{local_script}")
             return
 
@@ -1285,9 +1276,6 @@ class PerformanceMonitorDialog(QDialog):
                 timeout=2
             )
         else:
-            # self.parent.run_adb(
-            #     f'-s {ip} shell sh -c "nohup sh {remote_script} >/dev/null 2>&1 &"'
-            # )
             self.parent.run_adb(
                 f'-s {self.parent.ip_input.text()} shell "nohup {remote_script} > /dev/null 2>&1 &"'
             )
