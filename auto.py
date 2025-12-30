@@ -17,6 +17,8 @@ from PyQt6.QtWidgets import (QVBoxLayout, QFileDialog, QLabel, QDialog, QMessage
                              QApplication, QPushButton, QWidget, QHBoxLayout, QLineEdit, QTextEdit,
                              QListWidget, QSplitter, QFrame)
 
+from process_report import *
+
 # 在文件开头添加类型忽略注释
 # pyright: reportMissingImports=false
 # pyright: reportOptionalMemberAccess=false
@@ -464,6 +466,7 @@ class STBTool(QWidget):
         self.monitor_btn = QPushButton("性能监测", self)
         self.storage_btn = QPushButton("存储空间监测", self)
         self.analysis_btn = QPushButton("性能分析功能", self)
+        self.interface_analysis_btn = QPushButton("接口比对分析", self)
 
         # ADB 命令输入框
         self.adb_command_input = QLineEdit(self)
@@ -485,6 +488,7 @@ class STBTool(QWidget):
         top_layout.addWidget(self.monitor_btn)
         top_layout.addWidget(self.storage_btn)
         top_layout.addWidget(self.analysis_btn)
+        top_layout.addWidget(self.interface_analysis_btn)
 
         adb_layout = QHBoxLayout()
         adb_layout.addWidget(self.adb_command_input)
@@ -506,6 +510,8 @@ class STBTool(QWidget):
         self.monitor_btn.clicked.connect(self.show_performance_monitor)
         self.storage_btn.clicked.connect(self.show_storage_monitor)
         self.analysis_btn.clicked.connect(self.show_performance_analysis)
+        # 为数据比对绑定事件
+        self.interface_analysis_btn.clicked.connect(self.show_interface_comparison)
         # 为ADB命令输入框绑定回车键事件
         self.adb_command_input.returnPressed.connect(self.run_adb_command)
 
@@ -1074,6 +1080,23 @@ class STBTool(QWidget):
                 QMessageBox.critical(self, "错误", f"无法分析文件: {str(e)}")
                 self.log(f"性能分析错误: {str(e)}")
 
+    def show_interface_comparison(self):
+        """显示接口比对分析对话框"""
+        # 检查基础文件是否存在
+        base_file = "软探针接口字段.xlsx"
+        if not os.path.exists(base_file):
+            reply = QMessageBox.warning(
+                self,
+                "警告",
+                f"基础文件 {base_file} 不存在！\n\n请确保基础文件与程序在同一目录下。",
+                QMessageBox.StandardButton.Ok
+            )
+            return
+
+        # 显示接口比对分析对话框
+        dialog = InterfaceComparisonDialog(self)
+        dialog.exec()
+
 
 class LogSwitchDialog(QDialog):
     """日志开关配置对话框"""
@@ -1241,7 +1264,6 @@ class PerformanceMonitorDialog(QDialog):
 
         else:
             script_name = "top_Performance.sh"
-
 
         local_script = os.path.join(os.path.dirname(__file__), script_name)
         remote_script = f"/data/local/tmp/{script_name}"
@@ -2436,6 +2458,130 @@ class LoadDataThread(QThread):
                 return 0.0
         except Exception:
             return 0.0
+
+
+class InterfaceComparisonDialog(QDialog):
+    """接口比对分析对话框"""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.parent = parent
+        self.setWindowTitle("接口比对分析")
+        self.setFixedSize(500, 300)
+
+        layout = QVBoxLayout()
+
+        # 标题
+        title_label = QLabel("接口上报数据比对分析")
+        title_label.setStyleSheet("font-size: 16px; font-weight: bold; margin-bottom: 20px;")
+        layout.addWidget(title_label)
+
+        # 文件选择部分
+        file_layout = QHBoxLayout()
+        file_layout.addWidget(QLabel("日志文件:"))
+        self.file_path_input = QLineEdit()
+        self.file_path_input.setReadOnly(True)
+        file_layout.addWidget(self.file_path_input)
+        self.browse_btn = QPushButton("浏览...")
+        self.browse_btn.clicked.connect(self.browse_log_file)
+        file_layout.addWidget(self.browse_btn)
+        layout.addLayout(file_layout)
+
+        # 基础文件信息
+        base_file_label = QLabel(f"基础文件: 软探针接口字段.xlsx")
+        layout.addWidget(base_file_label)
+
+        # 说明文本
+        info_label = QLabel("说明：选择日志文件后，系统将自动提取接口上报数据并与基础文件进行比对，生成结果文件。")
+        info_label.setWordWrap(True)
+        info_label.setStyleSheet("color: #666; font-size: 12px; margin-top: 10px;")
+        layout.addWidget(info_label)
+
+        # 按钮部分
+        button_layout = QHBoxLayout()
+        self.start_btn = QPushButton("开始比对")
+        self.start_btn.clicked.connect(self.start_comparison)
+        self.start_btn.setEnabled(False)
+        self.cancel_btn = QPushButton("关闭")
+        self.cancel_btn.clicked.connect(self.reject)
+
+        button_layout.addStretch()
+        button_layout.addWidget(self.start_btn)
+        button_layout.addWidget(self.cancel_btn)
+        layout.addLayout(button_layout)
+
+        # 状态标签
+        self.status_label = QLabel("")
+        self.status_label.setStyleSheet("color: #666; font-size: 12px;")
+        layout.addWidget(self.status_label)
+
+        self.setLayout(layout)
+
+    def browse_log_file(self):
+        """浏览并选择日志文件"""
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "选择日志文件",
+            "",
+            "日志文件 (*.log);;所有文件 (*.*)"
+        )
+
+        if file_path:
+            self.file_path_input.setText(file_path)
+            self.start_btn.setEnabled(True)
+            self.status_label.setText(f"已选择文件: {os.path.basename(file_path)}")
+
+    def start_comparison(self):
+        """开始比对"""
+        log_file_path = self.file_path_input.text()
+
+        if not log_file_path or not os.path.exists(log_file_path):
+            QMessageBox.warning(self, "警告", "请选择有效的日志文件")
+            return
+
+        # 禁用按钮，显示处理中状态
+        self.start_btn.setEnabled(False)
+        self.start_btn.setText("处理中...")
+        self.status_label.setText("正在处理日志文件，请稍候...")
+        QApplication.processEvents()
+
+        try:
+            # 执行比对
+            success, result = perform_interface_comparison(log_file_path)
+
+            if success:
+                self.status_label.setText(f"比对完成！结果文件: {result}")
+
+                # 询问是否打开结果文件
+                reply = QMessageBox.question(
+                    self,
+                    "完成",
+                    f"接口比对分析完成！\n\n结果文件: {result}\n\n是否要打开结果文件？",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+                )
+
+                if reply == QMessageBox.StandardButton.Yes:
+                    # 打开结果文件
+                    if sys.platform == "win32":
+                        os.startfile(result)
+                    elif sys.platform == "darwin":  # macOS
+                        subprocess.run(["open", result])
+                    else:  # linux
+                        subprocess.run(["xdg-open", result])
+
+                # 关闭对话框
+                self.accept()
+            else:
+                QMessageBox.critical(self, "错误", f"比对失败: {result}")
+                self.status_label.setText("比对失败")
+                self.start_btn.setEnabled(True)
+                self.start_btn.setText("开始比对")
+
+        except Exception as e:
+            QMessageBox.critical(self, "错误", f"比对过程中出现异常: {str(e)}")
+            self.status_label.setText("处理失败")
+            self.start_btn.setEnabled(True)
+            self.start_btn.setText("开始比对")
 
 
 if __name__ == "__main__":
