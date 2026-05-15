@@ -159,84 +159,111 @@ class LogFileSelector(QDialog):
         self.parse_file_list(output)
 
     def parse_file_list(self, raw_output):
-        """使用增强正则表达式解析"""
+        """使用split方法解析ls -l输出"""
         self.table.setRowCount(0)
 
-        # 增强正则表达式（兼容带路径的文件名）
-        ls_pattern = re.compile(
-            r'^([-rwxdlsStT]{10,12})\s+'  # 权限
-            r'\d+\s+'  # 硬链接数
-            r'\S+\s+'  # 所有者
-            r'\S+\s+'  # 组
-            r'(\d+)\s+'  # 文件大小（允许长数字）
-            r'('  # 日期部分
-            r'\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}|'  # 格式1: 2025-05-20 11:43
-            r'\w{3}\s+\d{1,2}\s+\d{2}:\d{2}|'  # 格式2: Apr 27 10:38
-            r'\w{3}\s+\d{1,2}\s+\d{4}'  # 格式3: Aug 15 2025
-            r')\s+'
-            r'(.+)$'  # 路径（贪婪匹配到行末）
-        )
-
-        for line in raw_output.split('\n'):
+        lines = raw_output.strip().split('\n')
+        for line in lines:
             line = line.strip()
             if not line:
-                continue
-
-            # 过滤错误行（如 "Error: ..."）
-            if line.lower().startswith('error:'):
-                print(f"[WARNING] 忽略错误行: {line}")
                 continue
 
             # 跳过 "total ..." 行
             if line.startswith('total'):
                 continue
 
-            match = ls_pattern.match(line)
-            if not match:
-                print(f"[ERROR] 未匹配的行: {line}")  # 输出未匹配的完整行
+            print(f"[DEBUG] 解析行: {line}")
+
+            # 使用split分割，处理多个空格
+            parts = line.split()
+            print(f"[DEBUG] 分割结果: {parts}")
+
+            # 检查是否有足够的字段
+            if len(parts) < 7:
+                print(f"[ERROR] 字段不足: 只有{len(parts)}个字段")
                 continue
 
-            # 提取字段
-            perm, size, date_str, full_path = match.groups()
-            filename = os.path.basename(full_path.strip())  # 确保路径无前后空格
-
-            # 调试日志
-            print(f"[DEBUG] 匹配成功: {line}")
-            print(f"[DEBUG] 分组结果: perm={perm}, size={size}, date={date_str}, path={full_path}")
-            # 添加行到表格（显示纯文件名）
-            row = self.table.rowCount()
-            self.table.insertRow(row)
-
-            # 复选框
-            check = QCheckBox()
-            self.table.setCellWidget(row, 0, check)
-
-            # 文件名列
-            self.table.setItem(row, 1, QTableWidgetItem(filename))
-
-            # 处理日期格式
             try:
-                if '-' in date_str:  # 2023-08-15格式
-                    modify_time = QDateTime.fromString(date_str, "yyyy-MM-dd HH:mm")
-                else:  # Aug 15 14:22格式
-                    current_year = QDateTime.currentDateTime().date().year()
-                    modify_time = QDateTime.fromString(f"{current_year} {date_str}", "yyyy MMM dd HH:mm")
+                # Android ls -l 格式可能有两种：
+                # 格式1: 权限 用户 组 大小 日期 时间 文件名 (7个字段)
+                # 格式2: 权限 硬链接 用户 组 大小 日期 时间 文件名 (8个字段)
+                # 例如: -rw------- u0_a19 u0_a19 10590499 2025-12-31 14:57 2025_12_31_14-23-50.log
+                # 或:   -rw-rw-r-- 1 u0_a12 u0_a12 5540466 2026-05-14 10:42 2026_05_14_10-28-25.log
+
+                if len(parts) >= 8:
+                    # 8字段格式（包含硬链接数）
+                    perm = parts[0]
+                    links = parts[1]
+                    user = parts[2]
+                    group = parts[3]
+                    size = parts[4]
+                    date = parts[5]
+                    time = parts[6]
+                    filename = ' '.join(parts[7:])  # 文件名可能包含空格
+                    date_time = f"{date} {time}"
+                    print(f"[DEBUG] 8字段格式: user={user}, group={group}, size={size}, date_time={date_time}, filename={filename}")
+                elif len(parts) >= 7:
+                    # 7字段格式（不包含硬链接数）
+                    perm = parts[0]
+                    user = parts[1]
+                    group = parts[2]
+                    size = parts[3]
+                    date = parts[4]
+                    time = parts[5]
+                    filename = ' '.join(parts[6:])  # 文件名可能包含空格
+                    date_time = f"{date} {time}"
+                    print(f"[DEBUG] 7字段格式: user={user}, group={group}, size={size}, date_time={date_time}, filename={filename}")
+                else:
+                    print(f"[ERROR] 无法识别的格式")
+                    continue
+
+                print(f"[DEBUG] 解析成功: filename={filename}, size={size}, date={date_time}")
+
+                # 添加行到表格
+                row = self.table.rowCount()
+                self.table.insertRow(row)
+
+                # 复选框
+                check = QCheckBox()
+                self.table.setCellWidget(row, 0, check)
+
+                # 文件名列
+                self.table.setItem(row, 1, QTableWidgetItem(filename))
+
+                # 处理日期格式
+                try:
+                    if '-' in date_time and ':' in date_time:
+                        # 格式: 2025-12-31 14:57
+                        modify_time = QDateTime.fromString(date_time, "yyyy-MM-dd HH:mm")
+                    elif ':' in date_time:
+                        # 格式: Dec 31 14:57
+                        current_year = QDateTime.currentDateTime().date().year()
+                        date_str = f"{current_year} {date_time}"
+                        modify_time = QDateTime.fromString(date_str, "yyyy MMM dd HH:mm")
+                    else:
+                        # 格式: Dec 31 2025
+                        modify_time = QDateTime.fromString(date_time, "MMM dd yyyy")
+                except Exception as e:
+                    print(f"时间解析失败：{date_time} - {str(e)}")
+                    modify_time = QDateTime()
+
+                # 修改时间
+                time_label = QLabel()
+                if modify_time.isValid():
+                    time_label.setText(modify_time.toString("yyyy-MM-dd HH:mm"))
+                else:
+                    time_label.setText(date_time)
+                self.table.setCellWidget(row, 2, time_label)
+
+                # 文件大小
+                size_item = QTableWidgetItem(self.format_size(size))
+                size_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+                self.table.setItem(row, 3, size_item)
+
             except Exception as e:
-                print(f"时间解析失败：{date_str} - {str(e)}")
-                modify_time = QDateTime()
-
-            # 修改时间
-            time_label = QLabel()
-            if modify_time.isValid():
-                time_label.setText(modify_time.toString("yyyy-MM-dd HH:mm"))
-            else:
-                time_label.setText(date_str)
-            self.table.setCellWidget(row, 2, time_label)
-
-            # 文件大小
-            size_item = QTableWidgetItem(self.format_size(size))
-            size_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-            self.table.setItem(row, 3, size_item)
+                print(f"[ERROR] 解析失败: {str(e)}")
+                import traceback
+                traceback.print_exc()
 
     def format_size(self, bytes_str):
         """格式化文件大小"""
@@ -297,9 +324,8 @@ class LogFileSelector(QDialog):
                 check.setChecked(not check.isChecked())
 
     def extract_selected(self):
-        """增强日志记录的提取方法,记录文件提取详情"""
+        """增强日志记录的提取方法，记录文件提取详情"""
         files = self.get_selected_files()
-        # 添加类型检查
         if not files:
             if self.parent_widget is not None:
                 self.parent_widget.log("提取取消：未选择文件")
@@ -315,8 +341,8 @@ class LogFileSelector(QDialog):
         if self.parent_widget is not None:
             self.parent_widget.log(f"开始提取{len(files)}个文件到：{dest_dir}")
 
-        # 添加类型检查
-        if self.parent_widget is not None and hasattr(self.parent_widget, 'ip_input') and self.parent_widget.ip_input is not None:
+        if self.parent_widget is not None and hasattr(self.parent_widget,
+                                                      'ip_input') and self.parent_widget.ip_input is not None:
             ip = self.parent_widget.ip_input.text()
         else:
             ip = ""
@@ -328,31 +354,43 @@ class LogFileSelector(QDialog):
         progress = QProgressDialog("文件提取中...", "取消", 0, len(files), self)
         progress.setWindowModality(Qt.WindowModality.WindowModal)
 
-        for index, filename in enumerate(files):
-            # 修正源路径生成逻辑
-            src_path = f"{self.base_path}/{filename}"  # 使用统一基础路径
+        # 创建保存日志的子目录（使用log_type作为子目录名）
+        if self.log_type != "sdcard":
+            dest_dir = os.path.join(dest_dir, self.log_type)
+            os.makedirs(dest_dir, exist_ok=True)
+            self.parent_widget.log(f"在目标路径下创建子目录: {self.log_type}")
 
-            # 特殊处理sdcard路径（无嵌套目录）
-            if self.base_path == "/sdcard":
+        for index, filename in enumerate(files):
+            # 修复：确保源路径正确
+            if self.specific_files and self.custom_path:
+                # 特殊处理library/agent日志
+                src_path = f"{self.custom_path}/{filename}"
+            else:
                 src_path = f"{self.base_path}/{filename}"
 
             dest_path = os.path.join(dest_dir, filename)
 
             # 执行adb pull命令
             cmd = f'-s {ip} pull "{src_path}" "{dest_dir}"'
-            # 添加类型检查
             if self.parent_widget is not None:
                 output = self.parent_widget.run_adb(cmd)
-            else:
-                output = ""
+                self.parent_widget.log(f"执行命令: {cmd}")
+                self.parent_widget.log(f"输出: {output}")
 
             # 验证结果
             if os.path.exists(dest_path) and os.path.getsize(dest_path) > 0:
                 success_count += 1
+                self.parent_widget.log(f"文件提取成功: {filename}")
             else:
                 failed_files.append(filename)
+                self.parent_widget.log(f"文件提取失败: {filename}")
+
+            progress.setValue(index + 1)
+            if progress.wasCanceled():
+                break
 
         progress.close()
+
         # 显示详细结果
         result_msg = f"成功提取 {success_count}/{len(files)} 个文件\n"
         if failed_files:
@@ -424,11 +462,12 @@ class LogExtractDialog(QDialog):
         """提取指定类型日志"""
         dest_dir = QFileDialog.getExistingDirectory(self, "选择保存目录")
         if dest_dir:
-            # 添加类型检查
             parent = self.parent()
             if parent is not None and hasattr(parent, 'ip_input') and parent.ip_input is not None and hasattr(parent, 'run_adb'):
-                cmd = f"pull /data/data/com.vixtel.stb.agent/files/{log_type}"
-                output = parent.run_adb(f'-s {parent.ip_input.text()} {cmd} "{dest_dir}"')
+                # 修复：提取log_type目录的内容到目标目录
+                remote_path = f"/data/data/com.vixtel.stb.agent/files/{log_type}"
+                cmd = f'pull "{remote_path}" "{dest_dir}"'
+                output = parent.run_adb(f'-s {parent.ip_input.text()} {cmd}')
             QMessageBox.information(self, "完成", f"{log_type}日志提取完成！")
 
     def show_library_agent_selector(self):

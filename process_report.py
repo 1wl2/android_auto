@@ -19,7 +19,8 @@ def extract_json_from_log(log_file):
     interface_data = {
         "program": [],  # 收视接口
         "periodic": [],  # 周期接口
-        "alarm": []  # 告警接口
+        "alarm": [],  # 告警接口
+        "boot": []  # BOOT接口
     }
 
     print(f"开始解析日志文件: {log_file}")
@@ -88,10 +89,30 @@ def extract_json_from_log(log_file):
                             except json.JSONDecodeError:
                                 pass
 
+                elif "boot upload bean info" in line:
+                    start_marker = "boot upload bean info"
+                    if "：" in line:
+                        start_marker = "boot upload bean info："
+                    elif ":" in line:
+                        start_marker = "boot upload bean info:"
+
+                    json_start = line.find(start_marker)
+                    if json_start != -1:
+                        json_start += len(start_marker)
+                        json_str = line[json_start:].strip()
+
+                        if json_str.startswith("{"):
+                            try:
+                                json_data = json.loads(json_str)
+                                interface_data["boot"].append(json_data)
+                            except json.JSONDecodeError:
+                                pass
+
         print("日志解析完成:")
         print(f"  收视接口数据条数: {len(interface_data['program'])}")
         print(f"  周期接口数据条数: {len(interface_data['periodic'])}")
         print(f"  告警接口数据条数: {len(interface_data['alarm'])}")
+        print(f"  BOOT接口数据条数: {len(interface_data['boot'])}")
 
         return interface_data
 
@@ -362,7 +383,8 @@ def perform_interface_comparison(log_file_path, base_excel_path="软探针接口
         max_data_count = max(
             len(interface_data.get("program", [])),
             len(interface_data.get("periodic", [])),
-            len(interface_data.get("alarm", []))
+            len(interface_data.get("alarm", [])),
+            len(interface_data.get("boot", []))
         )
 
         if max_data_count == 0:
@@ -389,19 +411,25 @@ def perform_interface_comparison(log_file_path, base_excel_path="软探针接口
                 "name": "周期接口",
                 "type": "periodic",
                 "start_marker": "周期接口",
-                "next_markers": ["收视接口", "告警接口", "---"]
+                "next_markers": ["收视接口", "告警接口", "BOOT接口", "---"]
             },
             {
                 "name": "收视接口",
                 "type": "program",
                 "start_marker": "收视接口",
-                "next_markers": ["周期接口", "告警接口", "---"]
+                "next_markers": ["周期接口", "告警接口", "BOOT接口", "---"]
             },
             {
                 "name": "告警接口",
                 "type": "alarm",
                 "start_marker": "告警接口",
-                "next_markers": ["周期接口", "收视接口", "---"]
+                "next_markers": ["周期接口", "收视接口", "BOOT接口", "---"]
+            },
+            {
+                "name": "BOOT接口",
+                "type": "boot",
+                "start_marker": "BOOT接口",
+                "next_markers": ["周期接口", "收视接口", "告警接口", "---"]
             }
         ]
 
@@ -409,6 +437,10 @@ def perform_interface_comparison(log_file_path, base_excel_path="软探针接口
             interface_type = config["type"]
             interface_name = config["name"]
 
+            # 确保interface_type是字符串类型
+            if not isinstance(interface_type, str):
+                continue
+                
             data_list = interface_data.get(interface_type, [])
             data_count = len(data_list)
 

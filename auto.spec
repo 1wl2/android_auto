@@ -1,12 +1,12 @@
 # -*- mode: python ; coding: utf-8 -*-
-
+# pyinstaller --onedir --windowed --name="STBTool" --icon="tupiao.ico" --add-data="tupiao.ico;." --add-data="cleanup.sh;." --add-data="top_Performance.sh;." --add-data="top_Performance-android4.sh;." --add-data="platform-tools/*;platform-tools" auto.py
 
 a = Analysis(
-    ['auto1.py'],
+    ['auto.py'],
     pathex=[],
     binaries=[],
-    datas=[('top_Performance.sh', '.'), ('platform-tools\\adb.exe', 'platform-tools'), ('platform-tools\\AdbWinApi.dll', 'platform-tools'), ('platform-tools\\AdbWinUsbApi.dll', 'platform-tools')],
-    hiddenimports=['PyQt6', 'PyQt6.QtWidgets', 'PyQt6.QtCore', 'PyQt6.QtGui', 'PyQt6.QtNetwork'],
+    datas=[],
+    hiddenimports=[],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
@@ -22,7 +22,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name='auto1',
+    name='auto',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
